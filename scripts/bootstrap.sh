@@ -36,6 +36,10 @@ ask() {   # 파이프로 실행돼도(curl|bash) 터미널에서 읽는다
 
 [ "$(id -u)" = "0" ] || { echo "root 로 실행하세요:  sudo $0" >&2; exit 1; }
 
+# scp -r 로 받아오면 실행 비트가 떨어져 있을 수 있다. 여기서 되살린다 —
+# 안 그러면 "Permission denied" 한 줄로 끝나고 원인이 안 보인다.
+chmod +x "$ROOT"/*.sh "$ROOT"/scripts/*.sh 2>/dev/null || true
+
 # ---- 1) 이미 설치된 sender 에서 설정을 물려받는다 -------------------------
 say "1/4  기존 설치 찾는 중…"
 EXIST="$(find /home /root -maxdepth 4 -name config.json -path '*ai-monitoring-send*' \

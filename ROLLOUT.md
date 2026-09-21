@@ -52,11 +52,23 @@ curl -fsSL https://woohye0n.github.io/gpu-grants-dashboard/install-sender.sh | s
 curl -fsSL https://woohye0n.github.io/gpu-grants-dashboard/install-sender.sh | sudo bash -s -- --dry-run
 ```
 
-인터넷이 막힌 서버라면 NAS 배포본에서 직접:
+### 인터넷이 막힌 서버
+
+GPU 서버 중에는 GitHub 에 나가지 못하는 곳이 있습니다(`SSL_connect: Connection
+reset`). 그래도 **NAS 에는 닿습니다** — 송신기가 거기로 배치를 보내니까요.
+
 ```bash
-cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender    # 마운트가 있으면
-sudo ~/aidas-sender/scripts/bootstrap.sh
+# NAS 가 마운트된 서버
+cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender && \
+  sudo bash ~/aidas-sender/scripts/bootstrap.sh
+
+# 마운트도 없는 서버 (송신기가 쓰는 그 NAS 계정 그대로, 비번 1회)
+scp -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
+    ~/aidas-sender && sudo bash ~/aidas-sender/scripts/bootstrap.sh
 ```
+
+`bootstrap.sh` 는 그 서버의 기존 `config.json` 에서 노드 이름과 자격증명을
+물려받으므로, **scp 에서 한 번 친 비밀번호 외에는 아무것도 묻지 않습니다.**
 
 `bootstrap.sh` 가 **물어보지 않아도 되는 건 묻지 않습니다.**
 
