@@ -95,6 +95,16 @@ run_as() {
   fi
 }
 
+# 키가 안 먹는 걸 그 자리에서 알았을 때, 죽기 전에 한 번 물어본다. 한 번만 묻고
+# 나머지 사용자에게도 그대로 쓴다.
+ensure_password() {
+  [ -n "${SSH_PASSWORD:-}" ] && return 0
+  { : > /dev/tty; } 2>/dev/null || return 1
+  printf '     NAS 비밀번호 (SSH 키를 쓸 수 없어 필요합니다): ' > /dev/tty
+  read -rs SSH_PASSWORD < /dev/tty; echo > /dev/tty
+  [ -n "$SSH_PASSWORD" ]
+}
+
 uses_ai() {   # claude/codex 를 쓰는 흔적이 있나
   local home="$1" user="$2"
   compgen -G "$home/.claude*" >/dev/null 2>&1 && return 0
@@ -127,7 +137,17 @@ while IFS=: read -r u _ uid _ _ h sh; do
   IS_CAND[$u]=1
   rh="$(readlink -f "$h" 2>/dev/null || echo "$h")"
   [ -n "${OWNER_OF[$rh]:-}" ] && continue
-  own="$(stat -c %U "$rh" 2>/dev/null)"
+  # 홈 디렉토리 소유자가 곧 그 사람은 아니다. kakao 계열은 홈이 jovyan 소유인데
+  # 실제로 쓰는 사람은 wjk9904 이고, ~/.ssh 와 ~/.codex 는 wjk9904 소유 0700 이다.
+  # 송신기는 **기록을 읽을 수 있어야** 하므로, 도구 디렉토리의 주인을 먼저 본다.
+  own=""
+  for td in "$rh"/.claude* "$rh"/.codex*; do
+    [ -d "$td" ] || continue
+    own="$(stat -c %U "$td" 2>/dev/null)"
+    [ -n "$own" ] && [ "$own" != "UNKNOWN" ] && break
+    own=""
+  done
+  [ -n "$own" ] || own="$(stat -c %U "$rh" 2>/dev/null)"
   [ -n "$own" ] && [ "$own" != "UNKNOWN" ] && OWNER_OF[$rh]="$own"
 done < /etc/passwd
 # 소유자가 설치 후보가 아니면(root 소유, nologin 계정 등) 소유자 규칙을 버린다.
@@ -200,13 +220,12 @@ while IFS=: read -r user _ uid _ _ home shell; do
   if [ -n "$usable_key" ]; then
     cred="--key '$usable_key'"
   elif [ -z "$SSH_PASSWORD" ] && [ -n "$SSH_KEY" ] && \
-       ! timeout 5 ls -d "$NAS_MOUNT" >/dev/null 2>&1; then
-    # 키는 못 읽고 비밀번호도 없다. setup.sh 에 맡기면 "ssh key not found" 나
-    # 프롬프트 실패로 끝나 원인이 안 보인다.
+       ! timeout 5 ls -d "$NAS_MOUNT" >/dev/null 2>&1 && ! ensure_password; then
     printf '%-14s %-8s %s\n' "$user" "실패" \
       "SSH 키를 못 읽고 비밀번호도 없습니다 — --password-file 로 주세요"
     fail=$((fail+1)); continue
-  elif [ -n "$SSH_PASSWORD" ]; then
+  fi
+  if [ -z "$cred" ] && [ -n "$SSH_PASSWORD" ]; then
     pwtmp="$(mktemp)"; chmod 600 "$pwtmp"; printf '%s' "$SSH_PASSWORD" > "$pwtmp"
     chown "$user" "$pwtmp" 2>/dev/null
     cred="--password \"\$(cat '$pwtmp')\""
