@@ -178,7 +178,19 @@ else
   echo "config.json already exists — leaving it as-is (delete it to reconfigure)"
 fi
 
-# 2) one-shot test (actually collects + delivers one batch -> validates SSH/creds)
+# 2) 돌고 있던 송신기를 먼저 멈춘다.
+#
+# 예전에는 config.json 이 새로 쓰였을 때만 멈췄다. 그런데 setup.sh 를 다시 도는
+# 가장 흔한 이유는 **코드 업그레이드**이고, 그때 config 는 그대로다. 그러면
+# start.sh 가 "already running" 만 찍고 끝나, 옛 프로세스가 옛 코드로 계속
+# 돌았다 — 배포한 줄 알았는데 아무것도 안 바뀌는, 알아채기 어려운 실패다.
+# one-shot 전에 멈춰야 같은 상태 파일을 두 프로세스가 건드리지도 않는다.
+if [ -f data/sender.pid ] && kill -0 "$(cat data/sender.pid 2>/dev/null)" 2>/dev/null; then
+  echo "기존 송신기를 멈춥니다 (새 코드/설정으로 다시 띄우기 위해)"
+  bash stop.sh
+fi
+
+# 3) one-shot test (actually collects + delivers one batch -> validates SSH/creds)
 echo "running a one-shot collection + delivery test…"
 PYTHONPATH=. "$PY" -m sender.main --once || {
   echo "one-shot failed — check the SSH host/port/user/password above"; exit 1; }
@@ -264,23 +276,10 @@ UNIT
   exit 0
 fi
 
-# 3) start in the background (use `bash` so it works even before chmod takes hold)
-#
-# A sender that is already running holds the OLD config in memory — it read it
-# once at startup. If we just rewrote config.json (new credentials, new
-# collection paths) and left that process alone, every delivery keeps failing
-# with the old credentials while the queue grows, and the one-shot test above
-# succeeds with the new ones. That mismatch is invisible and wasted hours, so
-# restart whenever the config changed.
-if [ "$CONFIG_WRITTEN" = "1" ] && [ -f data/sender.pid ] \
-   && kill -0 "$(cat data/sender.pid 2>/dev/null)" 2>/dev/null; then
-  echo "config.json changed and a sender is already running — restarting it so"
-  echo "the new settings take effect (the old process still holds the old ones)."
-  bash stop.sh
-fi
+# 4) start in the background (use `bash` so it works even before chmod takes hold)
 bash start.sh
 
-# 4) survive a reboot. `nohup &` does not, which is why several nodes on this
+# 5) survive a reboot. `nohup &` does not, which is why several nodes on this
 # cluster simply stopped reporting weeks ago with nobody noticing. cron needs no
 # root and exists everywhere; start.sh is a no-op when the sender is alive, so
 # the same line doubles as a watchdog. PYTHON is pinned because cron's PATH is
