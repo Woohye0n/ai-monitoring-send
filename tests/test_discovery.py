@@ -286,6 +286,69 @@ check("세션도 한 번만",
       len(_dedupe_sessions([{"provider": "claude", "session_id": "s"},
                             {"provider": "claude", "session_id": "s"}])), 1)
 
+# --------------------------------------- 도중에 생긴 세션·계정을 잡는가
+print("\n[6] sender 를 재시작하지 않고 새로 생긴 것을 잡는가")
+from sender import main as _sm                                   # noqa: E402
+from sender.main import CollectorRegistry, collect_all           # noqa: E402
+
+_real_iter = discovery.iter_processes
+discovery.iter_processes = lambda: ([], set())   # 진짜 홈이 섞이지 않게
+try:
+    box = tempfile.mkdtemp(prefix="aidas-live-")
+    boxhome = os.path.join(box, "home"); os.makedirs(boxhome)
+    ACC = {"oauthAccount": {"emailAddress": "lab@x.com", "accountUuid": "u1"}}
+
+    def mkclaude(path):
+        os.makedirs(os.path.join(path, "projects", "p"), exist_ok=True)
+        os.makedirs(os.path.join(path, "sessions"), exist_ok=True)
+        json.dump(ACC, open(os.path.join(path, ".claude.json"), "w"))
+        open(os.path.join(path, "projects", "p", "s.jsonl"), "a").close()
+        return path
+
+    def add_turn(path, uuid, sess="s1"):
+        with open(os.path.join(path, "projects", "p", "s.jsonl"), "a") as fh:
+            fh.write(json.dumps({
+                "type": "assistant", "uuid": uuid, "sessionId": sess,
+                "timestamp": "2026-09-21T10:00:00Z", "cwd": "/w", "entrypoint": "cli",
+                "message": {"model": "m", "usage": {"input_tokens": 10, "output_tokens": 5}},
+            }) + "\n")
+
+    cfg = json.loads(json.dumps(_sm.DEFAULTS))
+    cfg.update(node_id="t", claude_usage={"enabled": False},
+               codex={"enabled": False, "dirs": []})
+    reg, state = CollectorRegistry(), {}
+
+    def cycle():
+        nonlocal_state = discovery.discover(cfg, home=boxhome)
+        res, st = collect_all(cfg, reg.sync(cfg, nonlocal_state), state, nonlocal_state)
+        state.clear(); state.update(st)
+        return res
+
+    first = mkclaude(os.path.join(boxhome, ".claude")); add_turn(first, "a1")
+    cycle()                                   # 부트스트랩 (계정 미확정)
+    add_turn(first, "a2")
+    r = cycle()
+    check("기존 세션의 새 턴을 귀속한다",
+          [u["uuid"] for u in r["usage"] if not u["assumed"]], ["a2"])
+
+    add_turn(first, "a3", sess="brand-new")
+    r = cycle()
+    check("새 세션도 재시작 없이 귀속한다",
+          [u["uuid"] for u in r["usage"] if not u["assumed"]], ["a3"])
+
+    # 로그인/계정 분리로 디렉토리가 새로 생기는 경우 — 수집기를 새로 만들어야 한다
+    second = mkclaude(os.path.join(boxhome, ".claude-lab1")); add_turn(second, "b1")
+    r = cycle()
+    check("새 계정 디렉토리를 재시작 없이 잡는다",
+          len(r["diagnostics"]["dirs"]), 2)
+    add_turn(second, "b2")
+    r = cycle()
+    check("새 디렉토리의 턴도 귀속된다",
+          [u["uuid"] for u in r["usage"] if not u["assumed"]], ["b2"])
+    shutil.rmtree(box, ignore_errors=True)
+finally:
+    discovery.iter_processes = _real_iter
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
