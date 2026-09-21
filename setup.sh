@@ -95,10 +95,25 @@ echo "  ⚠ 이 장비의 모든 사용자가 같은 노드 이름을 써야 합
 echo "    다르면 대시보드에 서버가 여러 대로 보입니다."
 echo
 
-# ask for the password if SSH mode and neither password nor key was given
+# ask for the password if SSH mode and neither password nor key was given.
+# 사람이 없는 자리(설치 스크립트, cron)에서는 물어볼 수 없다. 예전에는 그냥
+# 프롬프트를 찍고 read 가 EOF 를 만나 set -e 로 죽었다 — 화면에는 프롬프트 한 줄만
+# 남아서, 무엇이 잘못됐는지 알 수 없었다. 이제 무엇을 달라는지 말하고 멈춘다.
 if [ "$MODE" = "ssh" ] && [ -z "$SSH_PASSWORD" ] && [ -z "$SSH_KEY" ]; then
-  printf "SSH password for %s@%s: " "$SSH_USER" "$SSH_HOST" >&2
-  read -rs SSH_PASSWORD; echo >&2
+  if [ -t 0 ]; then
+    printf "SSH password for %s@%s: " "$SSH_USER" "$SSH_HOST" >&2
+    read -rs SSH_PASSWORD; echo >&2
+  else
+    cat >&2 <<MSG
+ERROR: NAS 가 마운트돼 있지 않아 SSH 전송인데, 비밀번호도 키도 없습니다.
+       (대화형이 아니라 물어볼 수도 없습니다)
+
+  SSH_PASSWORD='<NAS 비밀번호>' ./setup.sh --host $NODE_ID
+  또는  ./setup.sh --key ~/.ssh/id_ed25519_nas --host $NODE_ID
+  NAS 가 마운트된 서버라면  --local --nas <마운트 경로>
+MSG
+    exit 2
+  fi
 fi
 
 # A passphrase-protected key works when you ssh by hand (ssh-agent holds it) but

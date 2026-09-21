@@ -15,6 +15,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${SRC:-$ROOT}"                 # 배포 원본 (기본: 이 체크아웃)
 NODE=""; DRY=0; ALL=0
+PWFILE=""; SSH_KEY="${SSH_KEY:-}"
 DEST_NAME="ai-monitoring-send"
 
 while [ $# -gt 0 ]; do
@@ -23,6 +24,8 @@ while [ $# -gt 0 ]; do
     --src) SRC="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
     --all) ALL=1; shift;;           # AI 도구 흔적이 없는 사용자도 포함
+    --password-file) PWFILE="$2"; shift 2;;   # NAS 비밀번호가 담긴 파일
+    --key) SSH_KEY="$2"; shift 2;;            # 비밀번호 대신 SSH 키
     *) echo "알 수 없는 인자: $1" >&2; exit 1;;
   esac
 done
@@ -31,6 +34,33 @@ done
 [ -f "$SRC/setup.sh" ] || { echo "원본이 아닙니다: $SRC" >&2; exit 1; }
 if [ "$(id -u)" != "0" ] && [ "$DRY" = "0" ]; then
   echo "root 로 실행하세요 (sudo). --dry-run 은 그냥 됩니다." >&2; exit 1
+fi
+
+# NAS 가 마운트돼 있으면 자격증명이 필요 없다. 없으면 SSH 전송이라 필요하다.
+# 사람마다 실패를 반복하기 전에 여기서 한 번에 막는다 — 예전에는 setup.sh 가
+# 프롬프트를 찍고 EOF 로 죽어, 사용자마다 같은 침묵이 반복됐다.
+NAS_MOUNT="${NAS_ROOT:-/mnt/nas/yunseok/ai-monitoring}"
+[ -n "$PWFILE" ] && SSH_PASSWORD="$(cat "$PWFILE")"
+SSH_PASSWORD="${SSH_PASSWORD:-}"
+if ! timeout 5 ls -d "$NAS_MOUNT" >/dev/null 2>&1; then
+  if [ -z "$SSH_PASSWORD" ] && [ -z "$SSH_KEY" ]; then
+    cat >&2 <<MSG
+ERROR: NAS 가 $NAS_MOUNT 에 마운트돼 있지 않아 SSH 전송입니다.
+       비밀번호나 키가 필요합니다.
+
+  sudo ./scripts/install-all-users.sh --host $NODE --password-file <비번파일>
+  sudo ./scripts/install-all-users.sh --host $NODE --key /path/to/id_ed25519_nas
+
+비번을 파일로 두기 싫으면:
+  printf '%s' '<비번>' > /dev/shm/nas.pw && chmod 600 /dev/shm/nas.pw
+  sudo ./scripts/install-all-users.sh --host $NODE --password-file /dev/shm/nas.pw
+  shred -u /dev/shm/nas.pw
+MSG
+    exit 1
+  fi
+  echo "NAS 미마운트 → SSH 전송으로 설치합니다 ($([ -n "$SSH_KEY" ] && echo '키' || echo '비밀번호'))"
+else
+  echo "NAS 가 $NAS_MOUNT 에 마운트돼 있어 자격증명 없이 설치합니다"
 fi
 
 EXCLUDES=(config.json data .git __pycache__)
@@ -127,7 +157,18 @@ while IFS=: read -r user _ uid _ _ home shell; do
 
   # 그 사용자의 환경으로 설치한다. setup.sh 는 이미 있는 config.json 을 건드리지
   # 않고 cron 등록과 재시작만 한다.
-  out="$(run_as "$user" "$home" "cd '$dest' && ./setup.sh --host '$NODE'")"
+  # 비밀번호를 명령줄이나 env 로 넘기면 ps 에 보인다. 그 사용자만 읽을 수 있는
+  # 임시 파일로 건네고 바로 지운다.
+  cred=""
+  if [ -n "$SSH_KEY" ]; then
+    cred="--key '$SSH_KEY'"
+  elif [ -n "$SSH_PASSWORD" ]; then
+    pwtmp="$(mktemp)"; chmod 600 "$pwtmp"; printf '%s' "$SSH_PASSWORD" > "$pwtmp"
+    chown "$user" "$pwtmp" 2>/dev/null
+    cred="--password \"\$(cat '$pwtmp')\""
+  fi
+  out="$(run_as "$user" "$home" "cd '$dest' && ./setup.sh --host '$NODE' $cred")"
+  [ -n "${pwtmp:-}" ] && { rm -f "$pwtmp"; pwtmp=""; }
   if printf '%s' "$out" | grep -q '^Done\.'; then
     surf="$(printf '%s' "$out" | grep -o 'surfaces\[[^]]*\]' | head -1)"
     printf '%-14s %-8s %s\n' "$user" "OK" "$note ${surf:-}"
