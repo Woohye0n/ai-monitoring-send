@@ -29,6 +29,11 @@ cd ai-monitoring-send
 SSH_PASSWORD='<NAS_PASSWORD>' ./setup.sh        # 끝. 비번 자동입력으로 NAS에 전송 시작
 ```
 
+> **서버의 모든 사용자에게 한 번에** 켜려면 `sudo ./scripts/bootstrap.sh` 한 줄이면
+> 됩니다. 노드 이름과 NAS 자격증명은 기존 설치에서 물려받고, 알아낼 수 없을 때만
+> 그때 물어봅니다. 자세한 건 [ROLLOUT.md](ROLLOUT.md).
+
+
 > `-bash: ./setup.sh: Permission denied` 가 뜨면 클론/복사 과정에서 실행 비트가
 > 떨어진 것입니다. 다음 중 하나로 해결하세요 (setup.sh가 이후 나머지 스크립트
 > 권한은 자동 복구합니다):

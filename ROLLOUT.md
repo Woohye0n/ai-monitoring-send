@@ -32,55 +32,51 @@ ls -d /mnt/nas/yunseok/ai-monitoring 2>/dev/null && echo "NAS 마운트 있음"
 
 ---
 
-## 서버마다 달라지는 것 — `--host` 만이 아닙니다
-
-전 사용자 일괄 설치는 한 줄입니다.
+## 다른 서버에 켜기 — 두 줄
 
 ```bash
-sudo ./scripts/install-all-users.sh --host <이 장비 이름> --dry-run   # 먼저 확인
-sudo ./scripts/install-all-users.sh --host <이 장비 이름>
-```
-
-그런데 서버마다 **세 가지**가 다릅니다.
-
-| | 확인 | 다르면 |
-|---|---|---|
-| **NAS 마운트** | `ls -d /mnt/nas/yunseok/ai-monitoring` | 없으면 `SSH_PASSWORD=... ` 를 앞에 붙입니다(자격증명 필요) |
-| **코드를 어떻게 가져오나** | NAS 마운트 유무 | 아래 표 |
-| **홈을 공유하나** | `awk -F: '$3>=1000{print $6}' /etc/passwd \| sort \| uniq -d` | 공유 홈은 **한 번만** 설치됩니다(스크립트가 자동 처리) |
-
-### 코드를 그 서버로 가져오기
-
-배포본은 NAS 에 있습니다 — 모든 서버가 어떤 식으로든 NAS 에 닿습니다.
-
-```bash
-# NAS 가 마운트된 서버
-cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/ai-monitoring-send-dist
-
-# 마운트 안 된 서버 (송신기가 쓰는 그 NAS 계정 그대로)
+# 1) 코드 받기 (NAS 비번을 scp 가 한 번 물어봅니다)
 scp -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
-    ~/ai-monitoring-send-dist
+    ~/aidas-sender
+
+# 2) 끝
+sudo ~/aidas-sender/scripts/bootstrap.sh
 ```
-그 다음 `sudo ~/ai-monitoring-send-dist/scripts/install-all-users.sh --host <이름>`.
-`VERSION` 파일에 어느 커밋인지 적혀 있습니다.
 
-> 저장소에서 직접 clone 해도 되지만 **private** 이라 자격증명이 필요합니다.
-> NAS 경로가 자격증명 없이 되는 길입니다.
+NAS 가 마운트된 서버면 1번은 `cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender`.
 
-### 노드 이름은 이미 쓰던 것을 그대로
+`bootstrap.sh` 가 **물어보지 않아도 되는 건 묻지 않습니다.**
 
-새 이름을 지으면 대시보드에서 **다른 서버로 보입니다**(이력이 갈립니다).
-지금 쓰이는 이름은 `scripts/fleet-status.py` 로 확인하세요. 한 장비가 여러
-이름으로 보고 중이면 그것도 알려줍니다 — 그럴 때는 **하나로 합치세요.**
+| | 어떻게 알아내나 |
+|---|---|
+| 노드 이름 | 기존 설치의 `config.json` → 없으면 NAS 기록에서 `fqdn`+`ip` 로 같은 장비를 찾아 그 이름 → 없으면 `hostname` |
+| NAS 자격증명 | NAS 가 마운트돼 있으면 **불필요** → 없으면 기존 설치의 `config.json` 에서 가져옴 → 둘 다 없을 때만 **그때 터미널에서** 입력받음 |
+| 누구에게 설치 | `/etc/passwd` 의 실제 사용자 중 claude/codex 흔적이 있는 사람. 홈을 공유하면 한 번만 |
+
+즉 **이미 sender 가 돌던 서버에서는 아무것도 묻지 않습니다.** 비밀번호를 미리 파일로
+써 두거나 명령줄에 적을 일이 없습니다(`ps` 에 남지도 않습니다).
+
+먼저 확인만:
+```bash
+sudo ~/aidas-sender/scripts/bootstrap.sh --dry-run
+```
+
+### 노드 이름을 직접 주고 싶으면
+
+```bash
+sudo ~/aidas-sender/scripts/bootstrap.sh --host kakao-b200-2
+```
+새 이름을 지으면 대시보드에서 **다른 서버로 보입니다**(이력이 갈립니다). 그래서
+기본값은 "이 장비가 이미 쓰던 이름" 입니다. 한 장비가 여러 이름으로 보고 중이면
+`scripts/fleet-status.py` 가 알려줍니다.
 
 ```
 ADS-A100 = aidas-a100 = hgkim_AIDAS_A100     ← 같은 장비
 gpu-2-0  = kakao-b200-2                       ← 같은 장비
 ```
 
-이름을 합치면 `people.rules` 의 `host:` 기반 규칙이 죽습니다. 중앙 설정
-(`gpu-grants-dashboard/ai_snapshot.json`)에 그 사람의 `cwd_glob` 규칙이 있는지
-먼저 확인하세요.
+이름을 합치면 중앙 설정(`gpu-grants-dashboard/ai_snapshot.json`)의 `host:` 기반
+사람 규칙이 죽습니다. 그 사람의 `cwd_glob` 규칙이 있는지 먼저 보세요.
 
 ---
 
