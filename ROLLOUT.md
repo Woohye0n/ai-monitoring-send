@@ -63,12 +63,19 @@ cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender && \
   sudo bash ~/aidas-sender/scripts/bootstrap.sh
 
 # 마운트도 없는 서버 (송신기가 쓰는 그 NAS 계정 그대로, 비번 1회)
-scp -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
+scp -O -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
     ~/aidas-sender && sudo bash ~/aidas-sender/scripts/bootstrap.sh
 ```
 
 `bootstrap.sh` 는 그 서버의 기존 `config.json` 에서 노드 이름과 자격증명을
 물려받으므로, **scp 에서 한 번 친 비밀번호 외에는 아무것도 묻지 않습니다.**
+
+> **`-O` 를 빼면 안 됩니다.** OpenSSH 9.0+ 의 scp 는 기본이 SFTP 인데, Synology 의
+> SFTP 는 보통 계정 홈으로 chroot 돼 있어 `/volume1/...` 절대경로가 chroot
+> **안쪽**으로 해석되고 `No such file or directory` 로 끝납니다. `-O` 는 예전
+> 셸 기반 프로토콜을 써서 진짜 절대경로를 그대로 씁니다 — 송신기의 `sshcmd.py`
+> 도 같은 이유로 `-O` 를 쓰고 있었는데, 손으로 치는 안내에서만 빠져 있었습니다.
+> 아주 오래된 scp 라 `-O` 를 모르면 그때는 빼세요.
 
 `bootstrap.sh` 가 **물어보지 않아도 되는 건 묻지 않습니다.**
 
