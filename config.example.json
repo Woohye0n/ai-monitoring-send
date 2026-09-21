@@ -13,6 +13,10 @@
     "ssh_key": "",
     "remote_root": "/volume1/nas-nfs/yunseok/ai-monitoring"
   },
+  "discover": true,
+  "extra_roots": [],
+  "exclude_dirs": [],
+  "bootstrap_days": 2,
   "claude": {
     "enabled": true,
     "config_dirs": []

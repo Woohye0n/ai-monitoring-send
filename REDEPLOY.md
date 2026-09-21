@@ -1,7 +1,9 @@
 # ai-monitoring-send 재배포 가이드
 
-원격 GPU 서버에서 sender 코드를 갱신하고 재시작하는 절차. 2026-07-21 수집 로직
-수정(아래 "이번 변경") 이후 각 활성 서버에 반영해야 합니다.
+원격 GPU 서버에서 sender 코드를 갱신하고 재시작하는 절차.
+
+> 여러 서버·여러 사용자에게 **처음 배포**하는 절차와 사용자 공지문은
+> **[ROLLOUT.md](ROLLOUT.md)** 를 보세요.
 
 > ⚠️ **중앙 서버(ADS-A100)에서는 sender를 실행하지 마세요.** ADS-A100은
 > `backend.server`가 로컬(~/.claude2, ~/.codex) + NAS를 직접 수집하는 중앙입니다.
@@ -37,7 +39,7 @@ source ~/.bashrc
 | 3 | 원격 클라이언트 진입점 | `~/.local/bin/codex` 디스패처 (`app-server`만 랩으로) |
 | 4 | 셸 함수(alias) 자동 등록 | `~/.bashrc` 의 `lab1 <cmd>` / `lab2 <cmd>` |
 | 5 | VSCode 사이드바 계정 지정 | 확장 번들 바이너리 래핑 + `settings.json` |
-| 6 | sender 수집 경로 반영 | `config.json` 의 `claude.config_dirs`, `codex.dirs` |
+| 6 | sender 수집 경로 **추가** | `config.json` 의 `claude.config_dirs`, `codex.dirs` (덮어쓰지 않음) |
 
 **멱등**합니다 — 두 번째 실행부터는 전부 `= 이미 최신`, 변경 0건. 바꾸는 파일은 모두
 `.bak-<타임스탬프>` 로 백업합니다. 마커 없이 손으로 넣어둔 예전 `lab1()/lab2()` 정의가
@@ -93,6 +95,12 @@ app-server 실행에 쓰이지 않고(검증함), 확장은 자기 번들 바이
 `~/.local/bin/codex-lab1` 을 호출**하게 하세요. 이미 떠 있는 `codex resume` TUI도
 전환 이전에 시작됐다면 옛 디렉토리에 계속 씁니다 — `lab1 codex resume` 으로 다시 여세요.
 
+> **2026-09-21 이후**: 위 표에서 `~/.codex`(개인)로 떨어지는 경우도 sender 는 이제
+> **읽어서 보냅니다.** 없어지는 것은 "수집 자체가 안 됨" 이고, 남는 것은 "개인 계정
+> 으로 기록됨" 입니다. 개인 계정은 중앙 `tracking.allowed_accounts` 가 집계에서
+> 빼므로 **여전히 랩 사용량으로는 안 잡힙니다.** 즉 라우팅은 계속 맞춰야 하지만,
+> 이제 어긋나면 화면이 침묵하는 대신 `diagnostics` 와 `status.sh` 가 알려줍니다.
+
 데스크탑 ChatGPT 앱이 SSH 로 붙는 경우는 별도 함정입니다. sshd 가
 `PATH="$HOME/.local/bin:$PATH"; codex app-server proxy` 를 실행하는데 그 셸에는
 `CODEX_HOME` 을 넣을 방법이 없습니다(`PermitUserEnvironment` 는 보통 꺼져 있고
@@ -112,7 +120,63 @@ app-server 실행에 쓰이지 않고(검증함), 확장은 자기 번들 바이
 > 조용히 새기 시작합니다. `check-routing.py` 가 탐지하고, `setup-accounts.py`
 > 재실행으로 복구됩니다.
 
-## 이번 변경 (왜 재배포가 필요한가)
+## 이번 변경 (2026-09-21) — 수집 범위와 표면
+
+**증상.** 사람들이 분명히 쓰는데 대시보드에 안 잡히고, 잡혀도 누가 어떻게 썼는지
+구분이 안 됐습니다. NAS inbox 를 까 보니 원인이 셋이었습니다.
+
+| # | 무엇이 | 실제 증거 |
+|---|---|---|
+| 1 | **홈 밖 설정 디렉토리를 못 찾음** | 한 사용자가 `CLAUDE_CONFIG_DIR=/mnt/data/<user>/.claude-<user>`, `CODEX_HOME=/mnt/nvme1/<user>/.codex-<user>` 로 매일 두 도구를 쓰는데, 그 노드의 최신 배치는 `usage=0 sessions=0` |
+| 2 | **`setup-accounts.py` 가 수집 경로를 랩 디렉토리로 덮어씀** | VSCode 사이드바가 쓰는 `~/.codex` 가 수집 밖. 한 서버에는 `originator=codex_vscode` 236건 + `Codex Desktop` 64건이 쌓여 있는데 sender 가 아예 없음 |
+| 3 | **표면 정보를 버림** | Claude 는 JSONL 줄마다 `entrypoint`, Codex 는 `session_meta` 에 `originator`/`source` 를 적는데 수집기가 읽지 않음 |
+| 4 | **codex 세션 행이 `cwd` 를 잃음** | 안 바뀐 롤아웃은 메타를 다시 안 읽어 `cwd=None` → 중앙이 cwd 로 사람을 붙이므로 **미지정 세션 81개 중 79개**가 이것 |
+| 5 | **같은 이력이 두 디렉토리에** | 넓게 읽게 되면서 같은 턴이 두 번 전송(토큰 2배). uuid 로 중복 제거 + 경고 |
+
+덤으로, 한 장비에 사용자별 sender 가 여러 개 설치돼 `ADS-A100`·`aidas-a100`·
+`hgkim_AIDAS_A100` 이 서로 다른 노드로 보이고 있었습니다(셋 다 `fqdn=aidas`, 같은 IP).
+
+**바꾼 것.**
+
+| 파일 | 내용 |
+|---|---|
+| `sender/discovery.py` (신규) | 살아 있는 프로세스(`/proc/<pid>/environ`)·파일시스템·설정을 **합쳐** 읽을 디렉토리 결정. 표면(terminal/vscode/desktop) 분류 |
+| `sender/main.py` | 매 주기 재탐색 + 수집기 레지스트리(인스턴스는 유지 — 안 그러면 전부 `assumed`), `machine_id`/`home`, 배치에 `diagnostics`, **디렉토리 간 중복 제거**(같은 턴/계정/세션) |
+| `sender/claude_collector.py` | 레코드에 `surface`/`entrypoint`, 처음 보는 디렉토리의 과거 이력 스킵, usage 캐시 공유 |
+| `sender/codex_collector.py` | 레코드·세션에 `surface`, 같은 가드, **세션 행의 `cwd` 유실 수정**(담당자 미지정의 주원인) |
+| `scripts/setup-accounts.py` | 수집 경로를 **덮어쓰지 않고 더함** |
+| `scripts/where-landed.py` | 같은 탐색을 사용 + 프로세스 커버리지 출력 |
+| `status.sh` | 커버리지·경고를 함께 출력 |
+| `tests/test_discovery.py` (신규) | `python3 tests/test_discovery.py` |
+
+**설정 변경은 필요 없습니다.** 새 키(`discover`/`extra_roots`/`exclude_dirs`/
+`bootstrap_days`)는 전부 기본값이 있고 기존 `config.json` 을 그대로 씁니다.
+`setup-accounts.py` 가 예전에 좁혀 놓은 `config_dirs` 도 이제 울타리가 아닙니다.
+
+**첫 배치가 커지지 않습니다.** 새로 보이게 된 디렉토리의 과거 이력은
+`bootstrap_days`(기본 2일) 가드로 건너뜁니다 — 어차피 계정을 증명할 수 없어
+중앙에서 버려지는 기록입니다. 실측으로 21만 턴(111MB) → 0.4MB.
+
+### 재배포 후 확인
+
+```bash
+cd ~/ai-monitoring-send && git pull && ./stop.sh && ./start.sh && ./status.sh
+```
+
+`status.sh` 의 새 `coverage` 절에서:
+
+- 살아 있는 claude/codex 프로세스가 전부 `[수집]` 인지 (`[누락]` 이 있는데
+  `exclude_dirs` 로 뺀 게 아니면 버그입니다 — 그대로 알려주세요)
+- 로그의 `surfaces[...]` 에 그 사람이 실제로 쓰는 표면이 보이는지
+  (사이드바만 쓰는 사람인데 `terminal` 만 나오면 아직 뭔가 새고 있는 것)
+
+```bash
+python3 tests/test_discovery.py      # 서버에서 그대로 돌려도 됩니다
+```
+
+---
+
+## 이전 변경 (2026-07-21) — 한도 파싱
 
 수정된 파일은 **3개뿐**:
 
@@ -139,13 +203,16 @@ git pull
 ```
 
 ### 방법 B — git 미사용 시 (ADS-A100에서 파일 동기화)
-ADS-A100(중앙, 소스 원본)에서 각 원격으로 3개 파일만 밀어넣습니다.
+2026-09-21 변경은 파일 몇 개만 고른 동기화로는 안 됩니다(`sender/discovery.py` 가
+새로 생기고 `scripts/`·`status.sh` 도 함께 바뀝니다). 디렉토리째 밀어넣으세요 —
+`config.json` 과 `data/` 는 서버마다 다르므로 반드시 제외합니다.
+
 ```bash
 # ADS-A100에서 실행 (원격에 SSH 접근이 되는 경우)
-SRC=~/Workspace/ai-monitoring-send/sender
+SRC=~/Workspace/ai-monitoring-send
 for host in <원격1> <원격2> ...; do
-  rsync -av "$SRC/"{claude_usage.py,claude_collector.py,codex_collector.py} \
-        "$host:~/ai-monitoring-send/sender/"
+  rsync -av --exclude config.json --exclude data --exclude '.git' \
+        "$SRC/" "$host:~/ai-monitoring-send/"
 done
 ```
 그 후 각 원격에서:
@@ -156,9 +223,9 @@ cd ~/ai-monitoring-send && ./stop.sh && ./start.sh && ./status.sh
 원격→ADS-A100 방향만 되는 경우(원격에서 pull):
 ```bash
 # 각 원격 서버에서
-cd ~/ai-monitoring-send/sender
-scp <ads-a100>:~/Workspace/ai-monitoring-send/sender/{claude_usage.py,claude_collector.py,codex_collector.py} .
-cd .. && ./stop.sh && ./start.sh && ./status.sh
+cd ~ && rsync -av --exclude config.json --exclude data --exclude '.git' \
+    <ads-a100>:~/Workspace/ai-monitoring-send/ ai-monitoring-send/
+cd ai-monitoring-send && ./stop.sh && ./start.sh && ./status.sh
 ```
 
 ### systemd로 돌리는 경우
@@ -171,6 +238,8 @@ journalctl -u ai-monitoring-send -n 30 --no-pager
 
 `./status.sh` 또는 `tail -f data/sender.log` 에서:
 - `[sender] batch ... accounts=[...]` 에 해당 계정이 보이는지
+- `dirs=N surfaces[...]` 가 그 사람의 실제 사용 방식과 맞는지 (2026-09-21 변경)
+- `coverage` 절의 프로세스가 전부 `[수집]` 인지 (2026-09-21 변경)
 - codex 계정이면 몇 분 뒤 대시보드 카드에 **5시간 + 주간 게이지가 둘 다** 뜨는지
   (병합 수정이 반영됐다는 신호)
 

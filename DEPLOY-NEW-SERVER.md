@@ -7,6 +7,10 @@
 모든 스크립트는 **멱등**합니다. 중간까지 해둔 서버에서 다시 처음부터 실행해도
 이미 된 것은 `= 이미 최신` 으로 넘어갑니다.
 
+> 여기는 **한 사람이 한 서버를 계정 분리까지 끝내는** 절차입니다. 여러 서버·여러
+> 사용자에게 뿌릴 때 누가 무엇을 실행하는지는 **[ROLLOUT.md](ROLLOUT.md)** 를 보세요.
+> 계정을 하나만 쓴다면 Step 2·4 는 건너뛰어도 수집은 됩니다.
+
 **순서가 중요합니다.** 앞 단계의 산출물을 뒤 단계가 씁니다.
 
 | # | 단계 | 왜 이 순서인가 |
@@ -23,12 +27,16 @@
 
 ## Step 0 — 레포 받기
 
-`aidaslab/ai-monitoring-send` 는 **비공개**라 인증 없이 clone 되지 않습니다.
+`AIDASLab/ai-monitoring-send` 는 현재 **공개** 저장소라 인증 없이 clone 됩니다.
+(비공개로 되돌리면 아래 토큰 방식이 필요합니다.)
 
 ```bash
-# 처음이면 — 토큰 방식
-git clone https://<TOKEN>@github.com/AIDASLab/ai-monitoring-send.git ~/ai-monitoring-send
+# 처음이면
+git clone https://github.com/AIDASLab/ai-monitoring-send.git ~/ai-monitoring-send
 cd ~/ai-monitoring-send
+
+# 비공개로 바뀐 뒤라면 — 토큰 방식
+# git clone https://<TOKEN>@github.com/AIDASLab/ai-monitoring-send.git ~/ai-monitoring-send
 
 # 이미 받아둔 서버면
 cd ~/ai-monitoring-send && git pull
@@ -122,7 +130,13 @@ python3 scripts/setup-accounts.py              # 적용
 
 [6] sender 수집 경로
   + 수집 경로  claude=['~/.claude-lab1', '~/.claude-lab2']  codex=['~/.codex-lab1', '~/.codex-lab2']
+    (이 목록 밖이어도 실제로 쓰이는 디렉토리는 sender 가 찾아서 함께 수집합니다)
 ```
+
+> 이 목록은 **울타리가 아니라 힌트**입니다. sender 는 매 주기 살아 있는 프로세스의
+> `CLAUDE_CONFIG_DIR`/`CODEX_HOME` 과 파일시스템도 함께 훑어 읽을 곳을 정합니다.
+> 그래서 라우팅이 어긋나도 **사용량이 사라지지는 않습니다** — 다만 개인 계정으로
+> 기록되어 랩 집계에는 안 들어가므로, 아래 단계는 그대로 해야 합니다.
 
 주요 옵션: `--labs lab1`(랩 1개만) `--sidebar lab2` `--no-vscode` `--no-bashrc`
 `--no-sender-config` `--claude-bin/--codex-bin`(CLI 가 PATH 밖일 때)
@@ -254,14 +268,17 @@ lab1 codex resume        # thread 선택 → 프롬프트 하나 전송
    계정 aidaslab.snu@gmail.com
    수집 대상입니다 ✅  이관·라우팅 정상
 ```
-`⚠ 수집 대상이 아닙니다` 가 뜨면 그 작업은 대시보드에 안 잡힙니다 — 맨 `codex` 로
-실행한 경우이니 `lab1 codex` 를 쓰세요.
+`⚠ 수집 대상이 아닙니다` 는 `exclude_dirs` 로 뺐거나 `discover: false` 인 경우에만
+뜹니다. 그 외에는 어디에 쌓이든 수집은 됩니다 — 확인할 것은 **계정 줄**입니다.
+개인 계정으로 찍혀 있으면 랩 집계에 안 들어가므로 `lab1 codex` 로 다시 여세요.
 
 현황만 보려면:
 ```bash
-python3 scripts/where-landed.py            # 디렉토리별 계정·기록수·수집여부
+python3 scripts/where-landed.py            # 프로세스 커버리지 + 디렉토리별 계정·기록수
 python3 scripts/where-landed.py --since 10 # 최근 10분에 쓰인 것만
 ```
+첫 절에 **지금 돌고 있는 claude/codex 프로세스가 어디에 쓰는지**가 나옵니다.
+`[누락]` 이 있으면 그 pid 의 기록은 아무도 안 읽고 있다는 뜻입니다.
 
 ### VSCode 사이드바도 쓰는 서버라면
 
@@ -324,6 +341,11 @@ python3 ~/Workspace/aidas-ai-monitoring/scripts/people-report.py --nodes
 1. **VSCode Codex 확장 업데이트** → 래핑한 번들 바이너리가 덮어써짐
 2. **codex 자체 업데이트** → `~/.local/bin/codex` 디스패처가 심볼릭 링크로 복구됨
 3. **환경변수 없이 뜬 새 프로세스** → 개인 경로로 기록
+
+> **더 이상 "조용히" 는 아닙니다.** 2026-09-21 부터 sender 가 개인 경로도 읽고,
+> 배치의 `diagnostics` 와 `status.sh` 가 어디에 쓰이는지·어느 표면인지 적어 보냅니다.
+> 랩 계정으로 안 찍히는 것은 그대로이니 복구는 여전히 필요하지만, **발견이
+> 사람의 기억에 달려 있지 않습니다.**
 
 바꾸는 파일은 모두 `.bak-<타임스탬프>` 로 백업되고, `~/.local/bin/codex` 는
 심볼릭 링크 원본을 `codex.symlink-backup` 으로 남깁니다.

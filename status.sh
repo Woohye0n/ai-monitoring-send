@@ -14,5 +14,12 @@ echo "node=$NODE_ID  nas=$NAS_ROOT"
 DIR="$NAS_ROOT/inbox/$NODE_ID"
 echo "latest batches in $DIR:"
 ls -1t "$DIR" 2>/dev/null | head -3 | sed 's/^/  /' || echo "  (none yet / NAS not mounted)"
+# Coverage first: a sender that runs and delivers but reads the wrong
+# directory looks perfectly healthy in the lines above.
+echo "--- coverage (what is actually being read) ---"
+"$PY" scripts/where-landed.py 2>/dev/null | sed -n '1,12p' || echo "  (unavailable)"
+WARN="$(grep -c 'WARN' data/sender.log 2>/dev/null || echo 0)"
+[ "$WARN" -gt 0 ] && echo "--- warnings ($WARN in log; latest 3) ---" \
+  && grep 'WARN' data/sender.log | tail -n 3 | sed 's/^/  /'
 echo "--- last log lines ---"
 tail -n 8 data/sender.log 2>/dev/null || echo "  (no log yet)"

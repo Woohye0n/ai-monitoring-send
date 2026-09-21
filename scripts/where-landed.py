@@ -25,13 +25,19 @@ import time
 
 HOME = os.path.expanduser("~")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from sender import discovery  # noqa: E402  (ROOT must be on the path first)
 
 # 대화 기록이 실제로 쌓이는 하위 경로. codex 는 rollout, claude 는 프로젝트별 세션.
 SUBDIRS = {"codex": ("sessions", "archived_sessions"), "claude": ("projects",)}
 
+# 경로 -> 도구. 이름으로 때려맞히지 않고 sender 와 같은 탐색 결과를 쓴다.
+_PROVIDER = {}
+
 
 def kind_of(d):
-    return "codex" if "codex" in os.path.basename(d) else "claude"
+    return _PROVIDER.get(os.path.realpath(d)) or (
+        "codex" if "codex" in os.path.basename(d) else "claude")
 
 
 def codex_account(d):
@@ -61,22 +67,37 @@ def account(d):
     return codex_account(d) if kind_of(d) == "codex" else claude_account(d)
 
 
-def collected_dirs():
-    """sender 가 수집하도록 설정된 디렉토리 (config.json). 없으면 빈 집합."""
+def _load_cfg():
     try:
-        cfg = json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8"))
+        return json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8")), True
     except (OSError, ValueError):
-        return set(), False
-    out = set()
-    for key, sub in (("claude", "config_dirs"), ("codex", "dirs")):
-        for d in ((cfg.get(key) or {}).get(sub) or []):
-            out.add(os.path.realpath(os.path.expanduser(d)))
-    return out, True
+        return {}, False
 
 
-def config_dirs():
-    return sorted(d for d in glob.glob(f"{HOME}/.codex*") + glob.glob(f"{HOME}/.claude*")
-                  if os.path.isdir(d) and not d.endswith((".lock", ".bak")))
+def scan():
+    """sender 와 **같은 방식으로** 디렉토리를 찾는다.
+
+    예전에는 여기서 `~/.codex*` `~/.claude*` 만 훑었습니다. 그래서 홈 밖에
+    CLAUDE_CONFIG_DIR/CODEX_HOME 을 둔 서버에서는, 정작 일이 쌓이는 디렉토리가
+    이 목록에 아예 나오지 않았습니다 — 확인 도구가 문제를 못 보는 셈이었죠.
+    """
+    cfg, have_cfg = _load_cfg()
+    disc = discovery.discover(cfg)
+    collected = set()
+    for provider, dirs in disc["dirs"].items():
+        for d in dirs:
+            _PROVIDER[d["path"]] = provider
+            if os.path.isdir(d["path"]):
+                collected.add(d["path"])
+    # 수집 대상이 아니더라도 홈에 있는 것은 함께 보여준다 (제외 설정 확인용)
+    others = set()
+    for pattern in (f"{HOME}/.codex*", f"{HOME}/.claude*"):
+        for d in glob.glob(pattern):
+            real = os.path.realpath(d)
+            if os.path.isdir(d) and not d.endswith((".lock", ".bak")) \
+                    and real not in collected:
+                others.add(real)
+    return disc, collected, sorted(collected | others), have_cfg
 
 
 def snapshot(d):
@@ -116,10 +137,26 @@ def mark(d, collected, have_cfg):
     return "수집" if os.path.realpath(d) in collected else "제외"
 
 
-def report(since_min, collected, have_cfg):
+def coverage(disc, collected):
+    """지금 돌고 있는 도구가 어디에 쓰는지, 그게 수집되는지."""
+    procs = disc["processes"]
+    print("  지금 돌고 있는 claude/codex 프로세스")
+    if not procs:
+        print("    (없음)")
+    for pr in procs:
+        ok = pr["config_dir"] in collected
+        where = (pr["config_dir"] or "?").replace(HOME, "~", 1)
+        print(f"    [{'수집' if ok else '누락'}] pid {pr['pid']:<8} {pr['provider']:6s} "
+              f"{pr['surface_hint']:9s} → {where}")
+    for w in disc["warnings"]:
+        print(f"    ⚠ {w}")
+    print()
+
+
+def report(since_min, dirs, collected, have_cfg):
     cutoff = time.time() - since_min * 60 if since_min else 0
     any_row = False
-    for d in config_dirs():
+    for d in dirs:
         snap = snapshot(d)
         rows = sorted(((mt, sz, p) for p, (mt, sz) in snap.items() if mt >= cutoff),
                       reverse=True)
@@ -136,8 +173,7 @@ def report(since_min, collected, have_cfg):
         print(f"  최근 {since_min}분간 아무 기록도 없습니다.")
 
 
-def watch(seconds, collected, have_cfg):
-    dirs = config_dirs()
+def watch(seconds, dirs, collected, have_cfg):
     before = {d: snapshot(d) for d in dirs}
     print(f"  {seconds}초 동안 새 기록을 기다립니다. 다른 창에서 프롬프트를 보내세요…")
     deadline = time.time() + seconds
@@ -175,13 +211,14 @@ def main(argv=None):
                     help="새 기록을 기다렸다가 보고 (기본 180초)")
     a = ap.parse_args(argv)
 
-    collected, have_cfg = collected_dirs()
+    disc, collected, dirs, have_cfg = scan()
     if not have_cfg:
-        print("  ! config.json 이 없어 수집 여부를 판정할 수 없습니다 "
+        print("  ! config.json 이 없어 기본값으로 판정합니다 "
               "(setup.sh 를 돌린 서버에서 실행하세요).\n")
     if a.watch:
-        return watch(a.watch, collected, have_cfg)
-    report(a.since, collected, have_cfg)
+        return watch(a.watch, dirs, collected, have_cfg)
+    coverage(disc, collected)
+    report(a.since, dirs, collected, have_cfg)
     return 0
 
 

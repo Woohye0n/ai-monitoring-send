@@ -31,6 +31,11 @@ import socket
 import time
 from datetime import datetime, timezone
 
+try:
+    from . import discovery
+except ImportError:  # pragma: no cover - allow running as a loose script
+    import discovery
+
 RECENT_SESSION_MS = 24 * 3600 * 1000  # re-report a session row if active within this
 
 
@@ -94,11 +99,15 @@ def _decode_jwt_claims(token):
 
 class CodexCollector:
     def __init__(self, codex_dir="~/.codex", host=None, file_state=None,
-                 include_archived=False):
+                 include_archived=False, bootstrap_days=2):
         self.codex_dir = os.path.expanduser(codex_dir)
         self.host = host or socket.gethostname()
         self.file_state = file_state if file_state is not None else {}
         self.include_archived = include_archived
+        # See ClaudeCollector: a newly discovered directory can hold months of
+        # rollouts whose turns are all unattributable.  One real directory on
+        # this cluster holds 214k such turns.
+        self.bootstrap_days = max(0, bootstrap_days or 0)
         # Rate limits belong to an account, not to the directory forever: a
         # login switch must not leave the previous user's percentage on the new
         # user's dashboard card.  Cached PER WINDOW so a newer event that only
@@ -113,6 +122,13 @@ class CodexCollector:
         # written it in that window.
         self._last_poll_ms = 0
         self._last_account_identity = None
+        # rollout path -> its session_meta payload.  A file that did not change
+        # this cycle is not re-parsed, and the session row was then built from
+        # an empty meta -- so every such row went out with cwd=None.  The
+        # dashboard maps a session to a person BY cwd, so those rows could not
+        # be attributed to anyone: 79 of the 81 unattributed sessions in the
+        # last snapshot were exactly this, not a missing rule.
+        self._meta_by_path = {}
 
     @staticmethod
     def _state_size_mtime(value):
@@ -180,6 +196,35 @@ class CodexCollector:
                     if fn.startswith("rollout-") and fn.endswith(".jsonl"):
                         yield os.path.join(dirpath, fn)
 
+    def _read_meta(self, path):
+        """Return this rollout's ``session_meta`` payload, reading if needed.
+
+        Only the head of the file is scanned (session_meta is the first
+        record), which is cheap enough to do for a recently-active rollout that
+        would otherwise be reported with no working directory at all.  Cached
+        because the metadata of a given rollout never changes.
+        """
+        cached = self._meta_by_path.get(path)
+        if cached is not None:
+            return cached
+        meta = {}
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i > 20:
+                        break
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get("type") == "session_meta":
+                        meta = d.get("payload") or {}
+                        break
+        except OSError:
+            meta = {}
+        self._meta_by_path[path] = meta
+        return meta
+
     def _parse_rollout(self, path, email, attributable_after_ms=None):
         """Parse one rollout.
 
@@ -190,6 +235,8 @@ class CodexCollector:
         """
         meta = {}
         model = None
+        source = None
+        surface = discovery.UNKNOWN
         usage = []
         seq = 0
         win_latest = {}       # {window: (event_ts_ms, {utilization, resets_at})}
@@ -207,6 +254,18 @@ class CodexCollector:
                     p = d.get("payload") or {}
                     if t == "session_meta":
                         meta = p
+                        # Which surface opened this thread.  Codex records both
+                        # ``originator`` ("codex_vscode" / "codex_cli_rs" /
+                        # "Codex Desktop") and ``source`` ("vscode").
+                        # ``originator`` wins: the desktop app reports
+                        # source="vscode" too, so trusting ``source`` first
+                        # would file every desktop turn under the sidebar.
+                        # ``source`` is a dict for subagent threads -- carry
+                        # only the string form so no payload lands in a record.
+                        raw_source = p.get("source")
+                        source = raw_source if isinstance(raw_source, str) else None
+                        surface = discovery.normalize_surface(
+                            p.get("originator"), source)
                     elif t == "turn_context":
                         model = p.get("model") or model
                     elif t == "event_msg" and p.get("type") == "token_count":
@@ -247,6 +306,9 @@ class CodexCollector:
                             "service_tier": plan,
                             "request_id": None,
                             "version": meta.get("cli_version"),
+                            "entrypoint": meta.get("originator"),
+                            "source": source,
+                            "surface": surface,
                             "account_email": email if provable else None,
                             "assumed": not provable,
                         })
@@ -264,6 +326,8 @@ class CodexCollector:
         account_stable = bool(account_key and account_key == self._last_account_identity)
         attributable_after_ms = self._last_poll_ms if account_stable else None
         now_ms = int(time.time() * 1000)
+        cutoff_ms = (now_ms - self.bootstrap_days * 86400 * 1000
+                     if self.bootstrap_days else 0)
         records, updated, sessions = [], {}, []
         for path in self._iter_rollouts():
             try:
@@ -274,9 +338,18 @@ class CodexCollector:
             prev_size, prev_mtime = self._state_size_mtime(self.file_state.get(path))
             changed = not (prev_size == st.st_size and prev_mtime == st.st_mtime)
             meta, usage = (None, [])
-            if changed:
+            first_sight = prev_size is None and prev_mtime is None
+            skipped_backlog = bool(changed and first_sight and cutoff_ms
+                                   and mtime_ms < cutoff_ms)
+            if skipped_backlog:
+                state = self._state_for(st, account)
+                self.file_state[path] = state
+                updated[path] = state
+            elif changed:
                 meta, usage, rl_wins = self._parse_rollout(
                     path, email, attributable_after_ms)
+                self._meta_by_path[path] = meta or {}
+                # ``originator`` is always a string; keep the row consistent.
                 records.extend(usage)
                 state = self._state_for(st, account)
                 self.file_state[path] = state
@@ -289,16 +362,19 @@ class CodexCollector:
                             slot[k] = (ts_w, v)
             # only emit a session row for files that changed or were recently
             # active — avoids re-sending hundreds of old rollouts every cycle.
-            if not changed and (now_ms - mtime_ms) > RECENT_SESSION_MS:
+            if (skipped_backlog or not changed) and (now_ms - mtime_ms) > RECENT_SESSION_MS:
                 continue
             if meta is None:
-                meta = {"id": _sid_from_name(path)}
+                meta = self._read_meta(path)
             sid = (meta or {}).get("id") or _sid_from_name(path)
             cwd = (meta or {}).get("cwd")
             sessions.append({
                 "session_id": sid, "provider": "codex", "cwd": cwd,
                 "project": _basename(cwd), "version": (meta or {}).get("cli_version"),
                 "kind": "interactive", "entrypoint": (meta or {}).get("originator"),
+                "surface": discovery.normalize_surface(
+                    (meta or {}).get("originator"), (meta or {}).get("source")
+                    if isinstance((meta or {}).get("source"), str) else None),
                 "status": "active", "pid": None, "pid_alive": None,
                 "started_at": iso_to_ms((meta or {}).get("timestamp")),
                 "updated_at": int(st.st_mtime * 1000),

@@ -324,18 +324,41 @@ def patch_vscode(claude_lab, codex_lab, wrappers, dry):
 
 # --------------------------------------------------------------- sender config
 def patch_sender_config(labs, dry):
+    """랩 디렉토리를 수집 목록에 **더한다**.
+
+    예전에는 이 목록을 랩 디렉토리로 통째로 덮어썼습니다. 그러면 런처를 거치지
+    않은 세션 — 확장 업데이트로 래퍼가 풀린 VSCode 사이드바, 설정 전에 열어둔
+    tmux pane, 맨 `claude` — 이 전부 수집 밖으로 떨어지고, 화면에는 "그날 아무도
+    안 썼다" 와 똑같이 보였습니다. 지금은 sender 가 살아 있는 프로세스와
+    파일시스템에서 쓰이는 디렉토리를 매 주기 찾아내므로, 이 목록은 "여기도 꼭
+    보라" 는 힌트일 뿐 울타리가 아닙니다.
+    """
     path = os.path.join(ROOT, "config.json")
     if not os.path.exists(path):
         warnings.append("sender config.json 이 아직 없습니다. setup.sh 로 만든 뒤 "
                         "이 스크립트를 다시 실행하면 수집 경로가 맞춰집니다.")
         return
     cfg = json.load(open(path, encoding="utf-8"))
-    claude_dirs = [f"~/.claude-{l}" for l in labs]
-    codex_dirs = [f"~/.codex-{l}" for l in labs]
-    before = (cfg.get("claude", {}).get("config_dirs"), cfg.get("codex", {}).get("dirs"))
+
+    def merged(existing, wanted):
+        out = list(existing or [])
+        for d in wanted:
+            if d not in out:
+                out.append(d)
+        return out
+
+    before = (list(cfg.get("claude", {}).get("config_dirs") or []),
+              list(cfg.get("codex", {}).get("dirs") or []))
+    claude_dirs = merged(before[0], [f"~/.claude-{l}" for l in labs])
+    codex_dirs = merged(before[1], [f"~/.codex-{l}" for l in labs])
     cfg.setdefault("claude", {})["config_dirs"] = claude_dirs
     cfg.setdefault("codex", {})["dirs"] = codex_dirs
-    if before == (claude_dirs, codex_dirs):
+    # 예전 설치본은 이 키가 없어 기본값(켜짐)으로 돌지만, 누군가 꺼두었다면
+    # 랩 디렉토리만 보게 되므로 명시적으로 켠다.
+    if cfg.get("discover") is False:
+        cfg["discover"] = True
+        say("  + discover  다시 켬 (랩 밖 세션도 수집)")
+    if (before == (claude_dirs, codex_dirs)) and cfg.get("discover", True):
         say("  = 이미 최신  sender config.json")
         return
     changes.append("update sender config.json")
@@ -345,6 +368,7 @@ def patch_sender_config(labs, dry):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
             f.write("\n")
     say(f"  + 수집 경로  claude={claude_dirs}  codex={codex_dirs}")
+    say("    (이 목록 밖이어도 실제로 쓰이는 디렉토리는 sender 가 찾아서 함께 수집합니다)")
 
 
 # ------------------------------------------------------------------------ main

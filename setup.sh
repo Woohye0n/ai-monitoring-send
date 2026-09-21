@@ -37,8 +37,10 @@ SSH_KEY="${SSH_KEY:-}"
 REMOTE_ROOT="${REMOTE_ROOT:-/volume1/nas-nfs/yunseok/ai-monitoring}"
 NAS_ROOT="${NAS_ROOT:-/mnt/nas/yunseok/ai-monitoring}"
 USE_SYSTEMD=0
-CLAUDE_DIRS=()    # explicit Claude config dir(s); empty => auto-detect ~/.claude*
-CODEX_DIRS=()     # explicit Codex dir(s); empty => default ~/.codex
+FORCE_SSH=0       # --ssh: do not auto-switch to local even if the NAS is mounted
+AUTOSTART=1       # register a cron watchdog so a reboot does not end collection
+CLAUDE_DIRS=()    # extra Claude config dir(s) — added to what discovery finds
+CODEX_DIRS=()     # extra Codex dir(s) — added to what discovery finds
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,12 +56,44 @@ while [ $# -gt 0 ]; do
     --remote-root) REMOTE_ROOT="$2"; shift 2;;
     --claude-dir) CLAUDE_DIRS+=("$2"); shift 2;;   # repeatable: explicit .claude dir
     --codex-dir) CODEX_DIRS+=("$2"); shift 2;;     # repeatable: explicit .codex dir
+    --ssh) FORCE_SSH=1; shift;;
+    --no-autostart) AUTOSTART=0; shift;;
     --systemd) USE_SYSTEMD=1; shift;;
     *) echo "unknown arg: $1"; exit 1;;
   esac
 done
 
 command -v "$PY" >/dev/null || { echo "python3 not found (set PYTHON=...)"; exit 1; }
+PY_ABS="$(command -v "$PY")"
+
+# A node name must identify the MACHINE, not the person installing it. Three
+# users on one box each picked their own --host, so one server showed up as
+# three on the dashboard. Reject names that cannot possibly be a server name.
+case "$(printf '%s' "$NODE_ID" | tr 'A-Z' 'a-z')" in
+  ""|localhost|localhost.localdomain|ubuntu|debian|server|servername|node|host|pc|desktop)
+    echo "ERROR: 호스트 이름이 '$NODE_ID' 라 노드 이름으로 쓸 수 없습니다." >&2
+    echo "       관리자가 정한 서버 이름으로 --host <이름> 을 주세요." >&2
+    exit 1;;
+esac
+
+# If the NAS is already mounted, no credential is needed at all. Handing the NAS
+# password to every user on a shared box is both a risk and an extra way for the
+# install to fail, so prefer the mount whenever it is actually writable.
+# `timeout ls` rather than `test -d`: a hung NFS mount must not block setup.
+if [ "$MODE" = "ssh" ] && [ "$FORCE_SSH" = "0" ] && [ -z "$SSH_PASSWORD" ] && [ -z "$SSH_KEY" ]; then
+  if timeout 5 ls -d "$NAS_ROOT" >/dev/null 2>&1 \
+     && { [ -w "$NAS_ROOT/inbox" ] || [ -w "$NAS_ROOT" ]; }; then
+    MODE="local"
+    echo "NAS 가 $NAS_ROOT 에 마운트돼 있어 local 모드로 씁니다 (비밀번호 불필요)."
+    echo "  SSH 전송을 강제하려면 --ssh 를 주세요."
+  fi
+fi
+
+echo
+echo "  노드 이름: $NODE_ID   (전송: $MODE)"
+echo "  ⚠ 이 장비의 모든 사용자가 같은 노드 이름을 써야 합니다."
+echo "    다르면 대시보드에 서버가 여러 대로 보입니다."
+echo
 
 # ask for the password if SSH mode and neither password nor key was given
 if [ "$MODE" = "ssh" ] && [ -z "$SSH_PASSWORD" ] && [ -z "$SSH_KEY" ]; then
@@ -134,6 +168,65 @@ echo "running a one-shot collection + delivery test…"
 PYTHONPATH=. "$PY" -m sender.main --once || {
   echo "one-shot failed — check the SSH host/port/user/password above"; exit 1; }
 
+# 2b) Is this machine already reporting under a different name? Every batch now
+# carries a hashed machine id, so when the NAS is readable we can simply look.
+# Catching it here is the only cheap moment: afterwards it is a dashboard that
+# quietly shows one server as several.
+if [ "$MODE" = "local" ]; then
+  "$PY" - "$NAS_ROOT" "$NODE_ID" <<'PYEOF' || true
+import glob, gzip, hashlib, json, os, socket, sys
+
+nas, node = sys.argv[1], sys.argv[2]
+
+
+def machine_id():
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            raw = open(path, encoding="utf-8").read().strip()
+        except OSError:
+            continue
+        if raw:
+            return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return None
+
+
+def local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(1)
+        s.connect(("8.8.8.8", 53))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+mine, fqdn, ip = machine_id(), socket.getfqdn(), local_ip()
+for d in sorted(glob.glob(os.path.join(nas, "inbox", "*"))):
+    other = os.path.basename(d)
+    if other == node or not os.path.isdir(d):
+        continue
+    batches = sorted(glob.glob(os.path.join(d, "batch-*.json*")))[-1:]
+    if not batches:
+        continue
+    try:
+        f = batches[0]
+        data = json.load(gzip.open(f) if f.endswith(".gz") else open(f, "rb"))
+    except Exception:                                       # noqa: BLE001
+        continue
+    # machine_id only exists in batches written by an upgraded sender, so on the
+    # first rollout fall back to fqdn+ip -- which is what actually exposed the
+    # three names on this cluster in the first place.
+    same = (mine and data.get("machine_id") == mine) or (
+        fqdn and ip and data.get("fqdn") == fqdn and data.get("ip") == ip)
+    if same:
+        print(f"  ⚠ 이 장비는 이미 '{other}' 라는 이름으로 보고되고 있습니다"
+              f" (os_user={data.get('os_user')}).")
+        print(f"    같은 이름을 쓰세요:  rm -f config.json && ./setup.sh --host {other}")
+PYEOF
+fi
+
 if [ "$USE_SYSTEMD" = "1" ]; then
   cat <<UNIT
 
@@ -171,4 +264,28 @@ if [ "$CONFIG_WRITTEN" = "1" ] && [ -f data/sender.pid ] \
   bash stop.sh
 fi
 bash start.sh
+
+# 4) survive a reboot. `nohup &` does not, which is why several nodes on this
+# cluster simply stopped reporting weeks ago with nobody noticing. cron needs no
+# root and exists everywhere; start.sh is a no-op when the sender is alive, so
+# the same line doubles as a watchdog. PYTHON is pinned because cron's PATH is
+# minimal and python3 is often outside it (conda, pyenv, ...).
+if [ "$AUTOSTART" = "1" ] && [ "$USE_SYSTEMD" != "1" ]; then
+  DIR="$(pwd)"
+  MARK="# aidas ai-monitoring-send ($DIR)"
+  if ! command -v crontab >/dev/null 2>&1; then
+    echo "  ⚠ crontab 이 없어 자동 재시작을 등록하지 못했습니다."
+    echo "    재부팅하면 수집이 조용히 멈춥니다 — systemd 를 쓰거나(./setup.sh --systemd)"
+    echo "    로그인 스크립트에 $DIR/start.sh 를 넣어 두세요."
+  elif crontab -l 2>/dev/null | grep -qF "$MARK"; then
+    echo "  자동 재시작: 이미 등록돼 있습니다"
+  else
+    { crontab -l 2>/dev/null
+      echo "$MARK"
+      echo "@reboot PYTHON=$PY_ABS $DIR/start.sh >/dev/null 2>&1"
+      echo "*/10 * * * * PYTHON=$PY_ABS $DIR/start.sh >/dev/null 2>&1"
+    } | crontab - && echo "  자동 재시작 등록: 재부팅 후 + 10분마다 점검 (살아 있으면 아무것도 안 함)"
+  fi
+fi
+
 echo "Done. The central dashboard will show host '$NODE_ID' within ~1 minute."

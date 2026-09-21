@@ -17,9 +17,10 @@ import time
 from datetime import datetime
 
 try:
-    from . import claude_usage
+    from . import claude_usage, discovery
 except ImportError:  # pragma: no cover - allow running as a loose script
     import claude_usage
+    import discovery
 
 
 def iso_to_ms(ts):
@@ -106,18 +107,32 @@ class ClaudeCollector:
     """
 
     def __init__(self, config_dir, host=None, file_state=None,
-                 usage_enabled=True, usage_interval=300):
+                 usage_enabled=True, usage_interval=300, bootstrap_days=2,
+                 usage_cache=None):
         self.config_dir = os.path.expanduser(config_dir)
         self.host = host or socket.gethostname()
         self.file_state = dict(file_state or {})
         self.usage_enabled = usage_enabled
         self.usage_interval = max(180, usage_interval)  # endpoint 429s under ~180s
+        # How far back a *newly discovered* transcript is still worth reading.
+        # Discovery can hand this collector a directory with months of history;
+        # every record in it would be emitted as ``assumed`` (its account cannot
+        # be proven) and dropped centrally, so shipping it only costs bandwidth.
+        self.bootstrap_days = max(0, bootstrap_days or 0)
         self._last_account_identity = None
+        # sessionId -> the tool's own entrypoint string.  Session files carry it
+        # for live sessions and most transcript lines repeat it, but a line
+        # written by an older build may not -- remembering it per session keeps
+        # a terminal turn from being reported as surface "unknown".
+        self._entrypoint_by_session = {}
         self._last_poll_ms = 0
         self._account_file_mtime_ms = 0
         # Cache utilization by account and token fingerprint.  A login switch
         # must never put account A's percentage on account B's dashboard card.
-        self._usage_cache = {}
+        # Shared across collectors when several directories hold the same login,
+        # so discovering more directories cannot multiply calls to an endpoint
+        # that 429s easily.
+        self._usage_cache = usage_cache if usage_cache is not None else {}
 
     def _version(self):
         root = os.path.join(self.config_dir, "sessions")
@@ -278,10 +293,20 @@ class ClaudeCollector:
                     if not usage or not uuid:
                         continue
                     cwd = d.get("cwd")
+                    session_id = d.get("sessionId")
+                    # Which surface produced this turn.  Claude writes it on the
+                    # transcript line itself ("cli" for a terminal, "vscode" for
+                    # the sidebar); the sender used to drop it, which is why a
+                    # terminal user and a sidebar user were indistinguishable.
+                    entrypoint = d.get("entrypoint")
+                    if entrypoint and session_id:
+                        self._entrypoint_by_session[session_id] = entrypoint
+                    elif session_id:
+                        entrypoint = self._entrypoint_by_session.get(session_id)
                     out.append({
                         "uuid": uuid,
                         "provider": "claude",
-                        "session_id": d.get("sessionId"),
+                        "session_id": session_id,
                         "project": project_name(cwd, proj),
                         "cwd": cwd,
                         "git_branch": d.get("gitBranch"),
@@ -294,6 +319,9 @@ class ClaudeCollector:
                         "service_tier": usage.get("service_tier"),
                         "request_id": d.get("requestId"),
                         "version": d.get("version"),
+                        "entrypoint": entrypoint,
+                        "surface": discovery.normalize_surface(entrypoint),
+                        "user_type": d.get("userType"),
                         "account_email": email,
                         "assumed": assumed,
                     })
@@ -347,6 +375,8 @@ class ClaudeCollector:
         """``account_stable`` = the previous poll saw this exact account, which
         is what lets a brand-new file be attributed instead of discarded."""
         records, updated = [], {}
+        cutoff_ms = (int(time.time() * 1000) - self.bootstrap_days * 86400 * 1000
+                     if self.bootstrap_days else 0)
         account_email = account.get("email") if account else None
         account_identity = self._account_identity(account)
         for proj, path in self._iter_jsonl():
@@ -361,6 +391,16 @@ class ClaudeCollector:
                 and prev.get("mtime") == st.st_mtime and offset == st.st_size
             )
             if unchanged:
+                continue
+
+            if prev is None and cutoff_ms and int(st.st_mtime * 1000) < cutoff_ms:
+                # First sight of a transcript last written before we started
+                # watching it.  Record the cursor at EOF so anything appended
+                # from now on is attributable, and skip the unattributable
+                # backlog instead of uploading it to be discarded.
+                cursor = self._state_for(st, st.st_size, account)
+                self.file_state[path] = cursor
+                updated[path] = cursor
                 continue
 
             prior_identity = None
@@ -409,6 +449,9 @@ class ClaudeCollector:
             cwd = s.get("cwd")
             pid = s.get("pid")
             started_at = s.get("startedAt")
+            entrypoint = s.get("entrypoint")
+            if entrypoint and s.get("sessionId"):
+                self._entrypoint_by_session[s["sessionId"]] = entrypoint
             alive = pid_alive(pid, started_at)
             # A one-poll debounce prevents a session that predates a login
             # change from being claimed by the new account.
@@ -423,7 +466,8 @@ class ClaudeCollector:
                 "project": project_name(cwd),
                 "version": s.get("version"),
                 "kind": s.get("kind"),
-                "entrypoint": s.get("entrypoint"),
+                "entrypoint": entrypoint,
+                "surface": discovery.normalize_surface(entrypoint, s.get("kind")),
                 "status": s.get("status"),
                 "pid": pid,
                 "pid_alive": (None if alive is None else (1 if alive else 0)),
@@ -452,8 +496,10 @@ class ClaudeCollector:
         switched_from = (self._last_account_identity[1]
                          if switched and self._last_account_identity else None)
         account_stable = bool(identity and identity == self._last_account_identity)
-        usage, updated = self._usage(account, account_stable)
+        # Sessions first: they carry ``entrypoint`` for every live session, so
+        # the cache is warm before the transcripts are parsed.
         sessions = self._sessions(email, account_stable)
+        usage, updated = self._usage(account, account_stable)
         self._last_account_identity = identity
         self._last_poll_ms = int(time.time() * 1000)
         return {
