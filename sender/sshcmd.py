@@ -264,6 +264,28 @@ def scp_put(cfg, local_path, remote_path):
     return out
 
 
+def scp_get(cfg, remote_path, local_path, recursive=False):
+    """Copy remote_path down to local_path (mirror of scp_put).
+
+    Used to pull the distribution from the NAS when updating a server: the
+    credentials are already in config.json, so an upgrade needs no new secret
+    and no second password prompt.
+    """
+    source = f"{cfg['ssh_user']}@{cfg['ssh_host']}:{remote_path}"
+    base = _common_opts(cfg, for_scp=True)
+    if recursive:
+        base = ["-r"] + base
+    code, out = _exec(cfg, ["scp", "-O"] + base + [source, local_path])
+    if code != 0 and _opt_unsupported(out):
+        code, out = _exec(cfg, ["scp"] + base + [source, local_path])
+    if code != 0:
+        detail = out.strip()[:300]
+        if _is_auth_failure(out):
+            raise SshError(f"scp failed: {detail}\n{auth_help(cfg)}")
+        raise SshError(f"scp failed (code {code}): {detail}")
+    return out
+
+
 def _opt_unsupported(out):
     """True if scp rejected an option (so we should retry without -O).
     Transfer errors like 'No such file or directory' don't match → they surface.
