@@ -73,17 +73,25 @@ def ip():
     except OSError: return None
     finally: s.close()
 fq, myip = socket.getfqdn(), ip()
-best = None
+# 한 장비가 여러 이름으로 보고 중일 수 있다(이름을 새로 지으면 그렇게 된다).
+# 그럴 때는 **이력이 가장 긴 이름**을 고른다 — 알파벳순으로 아무거나 집으면
+# 방금 잘못 생긴 이름이 정답이 되어 버린다.
+cands = []
 for d in sorted(glob.glob(os.path.join(sys.argv[1], "*"))):
-    b = sorted(glob.glob(os.path.join(d, "batch-*.json*")))[-1:]
-    if not b: continue
+    files = sorted(glob.glob(os.path.join(d, "batch-*.json*")))
+    if not files: continue
     try:
-        f = b[0]
+        f = files[-1]
         j = json.load(gzip.open(f) if f.endswith(".gz") else open(f, "rb"))
     except Exception: continue
     if j.get("fqdn") == fq and j.get("ip") == myip:
-        best = os.path.basename(d); break
-print(best or "")
+        cands.append((len(files), os.path.basename(d)))
+cands.sort(reverse=True)
+if len(cands) > 1:
+    others = ", ".join(n for _, n in cands[1:])
+    sys.stderr.write(f"     이 장비가 여러 이름으로 보고 중입니다: {others} "
+                     f"→ 이력이 가장 긴 '{cands[0][1]}' 로 통일합니다\n")
+print(cands[0][1] if cands else "")
 PY
 )"
     [ -n "$NODE" ] && say "     NAS 기록에서 이 장비 이름을 찾음: $NODE"
