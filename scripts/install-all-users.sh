@@ -113,7 +113,29 @@ printf '%s\n' "------------------------------------------------------------"
 # 여러 계정이 같은 홈을 쓰는 서버가 있다(kakao 계열은 전원이 /home/jovyan 이다).
 # 그런 곳에 사람 수만큼 설치하면 같은 디렉토리를 덮어쓰고, 같은 홈을 읽는 송신기가
 # 여러 개 돌아 같은 배치를 중복으로 올린다. 홈 하나당 한 번만 설치한다.
-declare -A DONE_HOME=()
+#
+# **누구로 설치하느냐가 중요하다.** /etc/passwd 순서대로 첫 사람을 잡으면 실제로
+# 그 홈을 쓰는 사람이 아닌 옛 계정(jovyan)이 걸린다. 그러면 0700 인 ~/.ssh 를
+# 읽지 못해 "ssh key not found" 로 끝난다 — 실제로 그렇게 실패했다.
+# 홈 디렉토리의 **소유자**를 고른다.
+declare -A DONE_HOME=() OWNER_OF=() IS_CAND=()
+while IFS=: read -r u _ uid _ _ h sh; do
+  [ "$uid" -ge 1000 ] 2>/dev/null || continue
+  [ "$uid" -lt 65534 ] || continue
+  case "$sh" in */nologin|*/false) continue;; esac
+  [ -d "$h" ] || continue
+  IS_CAND[$u]=1
+  rh="$(readlink -f "$h" 2>/dev/null || echo "$h")"
+  [ -n "${OWNER_OF[$rh]:-}" ] && continue
+  own="$(stat -c %U "$rh" 2>/dev/null)"
+  [ -n "$own" ] && [ "$own" != "UNKNOWN" ] && OWNER_OF[$rh]="$own"
+done < /etc/passwd
+# 소유자가 설치 후보가 아니면(root 소유, nologin 계정 등) 소유자 규칙을 버린다.
+# 안 그러면 그 홈에는 아무도 설치되지 않는다.
+for rh in "${!OWNER_OF[@]}"; do
+  [ -n "${IS_CAND[${OWNER_OF[$rh]}]:-}" ] || unset 'OWNER_OF[$rh]'
+done
+
 ok=0; skip=0; fail=0
 while IFS=: read -r user _ uid _ _ home shell; do
   [ "$uid" -ge 1000 ] 2>/dev/null || continue
@@ -124,6 +146,11 @@ while IFS=: read -r user _ uid _ _ home shell; do
   real_home="$(readlink -f "$home" 2>/dev/null || echo "$home")"
   if [ -n "${DONE_HOME[$real_home]:-}" ]; then
     printf '%-14s %-8s %s\n' "$user" "건너뜀" "홈을 ${DONE_HOME[$real_home]} 와 공유 ($real_home)"
+    skip=$((skip+1)); continue
+  fi
+  owner="${OWNER_OF[$real_home]:-}"
+  if [ -n "$owner" ] && [ "$owner" != "$user" ] && id "$owner" >/dev/null 2>&1; then
+    printf '%-14s %-8s %s\n' "$user" "건너뜀" "이 홈의 주인은 $owner 입니다"
     skip=$((skip+1)); continue
   fi
 
@@ -160,8 +187,25 @@ while IFS=: read -r user _ uid _ _ home shell; do
   # 비밀번호를 명령줄이나 env 로 넘기면 ps 에 보인다. 그 사용자만 읽을 수 있는
   # 임시 파일로 건네고 바로 지운다.
   cred=""
+  # 키 경로가 config 에 적혀 있어도 **그 사용자가 읽을 수 있어야** 쓸모가 있다.
+  # root 로 검사하면 통과해 버리므로 그 사용자로 확인한다.
+  usable_key=""
   if [ -n "$SSH_KEY" ]; then
-    cred="--key '$SSH_KEY'"
+    if run_as "$user" "$home" "test -r '$SSH_KEY'" >/dev/null 2>&1; then
+      usable_key="$SSH_KEY"
+    else
+      printf '%-14s %-8s %s\n' "$user" "알림" "SSH 키를 못 읽어 비밀번호로 진행 ($SSH_KEY)"
+    fi
+  fi
+  if [ -n "$usable_key" ]; then
+    cred="--key '$usable_key'"
+  elif [ -z "$SSH_PASSWORD" ] && [ -n "$SSH_KEY" ] && \
+       ! timeout 5 ls -d "$NAS_MOUNT" >/dev/null 2>&1; then
+    # 키는 못 읽고 비밀번호도 없다. setup.sh 에 맡기면 "ssh key not found" 나
+    # 프롬프트 실패로 끝나 원인이 안 보인다.
+    printf '%-14s %-8s %s\n' "$user" "실패" \
+      "SSH 키를 못 읽고 비밀번호도 없습니다 — --password-file 로 주세요"
+    fail=$((fail+1)); continue
   elif [ -n "$SSH_PASSWORD" ]; then
     pwtmp="$(mktemp)"; chmod 600 "$pwtmp"; printf '%s' "$SSH_PASSWORD" > "$pwtmp"
     chown "$user" "$pwtmp" 2>/dev/null
