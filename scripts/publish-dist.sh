@@ -13,6 +13,11 @@ mkdir -p "$DIST"
 rsync -rlt --delete --no-g --no-p --no-o \
       --exclude .git --exclude config.json --exclude data --exclude __pycache__ \
       "$ROOT/" "$DIST/" || exit 1
+# NAS 에서는 SSH 계정(synologynas)이 이 파일들을 읽어 가야 한다. rsync 가 남기는
+# 기본 권한은 0600 이라 그 계정이 못 읽고, scp 가 "Permission denied" 로 끝난다.
+# 실제로 그렇게 실패했다 — 받는 쪽에서 원인을 알아보기 어려운 종류의 실패다.
+chmod -R a+rX "$DIST" 2>/dev/null
+
 printf 'commit: %s\n날짜: %s\n출처: Woohye0n/ai-monitoring-send\n' \
   "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')" \
   "$(TZ=Asia/Seoul date '+%F %H:%M KST')" > "$DIST/VERSION"
