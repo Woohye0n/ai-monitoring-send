@@ -32,6 +32,58 @@ ls -d /mnt/nas/yunseok/ai-monitoring 2>/dev/null && echo "NAS 마운트 있음"
 
 ---
 
+## 서버마다 달라지는 것 — `--host` 만이 아닙니다
+
+전 사용자 일괄 설치는 한 줄입니다.
+
+```bash
+sudo ./scripts/install-all-users.sh --host <이 장비 이름> --dry-run   # 먼저 확인
+sudo ./scripts/install-all-users.sh --host <이 장비 이름>
+```
+
+그런데 서버마다 **세 가지**가 다릅니다.
+
+| | 확인 | 다르면 |
+|---|---|---|
+| **NAS 마운트** | `ls -d /mnt/nas/yunseok/ai-monitoring` | 없으면 `SSH_PASSWORD=... ` 를 앞에 붙입니다(자격증명 필요) |
+| **코드를 어떻게 가져오나** | NAS 마운트 유무 | 아래 표 |
+| **홈을 공유하나** | `awk -F: '$3>=1000{print $6}' /etc/passwd \| sort \| uniq -d` | 공유 홈은 **한 번만** 설치됩니다(스크립트가 자동 처리) |
+
+### 코드를 그 서버로 가져오기
+
+배포본은 NAS 에 있습니다 — 모든 서버가 어떤 식으로든 NAS 에 닿습니다.
+
+```bash
+# NAS 가 마운트된 서버
+cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/ai-monitoring-send-dist
+
+# 마운트 안 된 서버 (송신기가 쓰는 그 NAS 계정 그대로)
+scp -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
+    ~/ai-monitoring-send-dist
+```
+그 다음 `sudo ~/ai-monitoring-send-dist/scripts/install-all-users.sh --host <이름>`.
+`VERSION` 파일에 어느 커밋인지 적혀 있습니다.
+
+> 저장소에서 직접 clone 해도 되지만 **private** 이라 자격증명이 필요합니다.
+> NAS 경로가 자격증명 없이 되는 길입니다.
+
+### 노드 이름은 이미 쓰던 것을 그대로
+
+새 이름을 지으면 대시보드에서 **다른 서버로 보입니다**(이력이 갈립니다).
+지금 쓰이는 이름은 `scripts/fleet-status.py` 로 확인하세요. 한 장비가 여러
+이름으로 보고 중이면 그것도 알려줍니다 — 그럴 때는 **하나로 합치세요.**
+
+```
+ADS-A100 = aidas-a100 = hgkim_AIDAS_A100     ← 같은 장비
+gpu-2-0  = kakao-b200-2                       ← 같은 장비
+```
+
+이름을 합치면 `people.rules` 의 `host:` 기반 규칙이 죽습니다. 중앙 설정
+(`gpu-grants-dashboard/ai_snapshot.json`)에 그 사람의 `cwd_glob` 규칙이 있는지
+먼저 확인하세요.
+
+---
+
 ## 1-A. NAS 가 마운트된 서버 — 사용자가 직접
 
 공지문만 뿌리면 끝입니다(아래 2절). 자격증명이 필요 없어 관리자가 할 일이 없습니다.

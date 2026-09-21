@@ -48,12 +48,22 @@ if [ "$(id -u)" != "0" ]; then
 fi
 printf '%-14s %-8s %s\n' "사용자" "상태" "비고"
 printf '%s\n' "------------------------------------------------------------"
+# 여러 계정이 같은 홈을 쓰는 서버가 있다(kakao 계열은 전원이 /home/jovyan 이다).
+# 그런 곳에 사람 수만큼 설치하면 같은 디렉토리를 덮어쓰고, 같은 홈을 읽는 송신기가
+# 여러 개 돌아 같은 배치를 중복으로 올린다. 홈 하나당 한 번만 설치한다.
+declare -A DONE_HOME=()
 ok=0; skip=0; fail=0
 while IFS=: read -r user _ uid _ _ home shell; do
   [ "$uid" -ge 1000 ] 2>/dev/null || continue
   [ "$uid" -lt 65534 ] || continue
   case "$shell" in */nologin|*/false) continue;; esac
   [ -d "$home" ] || continue
+
+  real_home="$(readlink -f "$home" 2>/dev/null || echo "$home")"
+  if [ -n "${DONE_HOME[$real_home]:-}" ]; then
+    printf '%-14s %-8s %s\n' "$user" "건너뜀" "홈을 ${DONE_HOME[$real_home]} 와 공유 ($real_home)"
+    skip=$((skip+1)); continue
+  fi
 
   if [ "$ALL" = "0" ] && ! uses_ai "$home" "$user"; then
     printf '%-14s %-8s %s\n' "$user" "건너뜀" "claude/codex 흔적 없음"
@@ -62,6 +72,7 @@ while IFS=: read -r user _ uid _ _ home shell; do
 
   dest="$home/$DEST_NAME"
   note="새 설치"; [ -d "$dest" ] && note="갱신"
+  DONE_HOME[$real_home]="$user"
   if [ "$DRY" = "1" ]; then
     printf '%-14s %-8s %s\n' "$user" "예정" "$note → $dest"
     ok=$((ok+1)); continue
