@@ -124,4 +124,6 @@ trap '[ -n "${PWF:-}" ] && shred -u "$PWF" 2>/dev/null || true' EXIT
 
 # ---- 4) 전원 설치 ----------------------------------------------------------
 say "4/4  설치"
-"$ROOT/scripts/install-all-users.sh" --host "$NODE" "${CRED[@]}" ${PASS[@]+"${PASS[@]}"}
+# bash 로 부른다: /tmp 에 받아두는 경우 noexec 마운트라 실행 비트가 있어도
+# 직접 실행이 막힐 수 있다.
+bash "$ROOT/scripts/install-all-users.sh" --host "$NODE" "${CRED[@]}" ${PASS[@]+"${PASS[@]}"}

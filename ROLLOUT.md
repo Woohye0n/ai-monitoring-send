@@ -59,16 +59,20 @@ reset`). 그래도 **NAS 에는 닿습니다** — 송신기가 거기로 배치
 
 ```bash
 # NAS 가 마운트된 서버
-cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender && \
-  sudo bash ~/aidas-sender/scripts/bootstrap.sh
+cp -r /mnt/nas/yunseok/ai-monitoring-send-dist /tmp/aidas-sender && \
+  sudo bash /tmp/aidas-sender/scripts/bootstrap.sh
 
 # 마운트도 없는 서버 (송신기가 쓰는 그 NAS 계정 그대로, 비번 1회)
 scp -O -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
-    ~/aidas-sender && sudo bash ~/aidas-sender/scripts/bootstrap.sh
+    /tmp/aidas-sender && sudo bash /tmp/aidas-sender/scripts/bootstrap.sh
 ```
 
 `bootstrap.sh` 는 그 서버의 기존 `config.json` 에서 노드 이름과 자격증명을
 물려받으므로, **scp 에서 한 번 친 비밀번호 외에는 아무것도 묻지 않습니다.**
+
+> **받는 위치는 `/tmp` 로 잡으세요.** 홈이 공유 계정(`/home/jovyan`) 이라 정작
+> 로그인한 사용자가 쓰지 못하는 서버가 있습니다(`Permission denied`). `/tmp` 는
+> 어디서나 쓸 수 있고, 설치가 끝나면 이 복사본은 필요 없습니다.
 
 > **`-O` 를 빼면 안 됩니다.** OpenSSH 9.0+ 의 scp 는 기본이 SFTP 인데, Synology 의
 > SFTP 는 보통 계정 홈으로 chroot 돼 있어 `/volume1/...` 절대경로가 chroot
@@ -90,13 +94,13 @@ scp -O -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-m
 
 먼저 확인만:
 ```bash
-sudo ~/aidas-sender/scripts/bootstrap.sh --dry-run
+sudo /tmp/aidas-sender/scripts/bootstrap.sh --dry-run
 ```
 
 ### 노드 이름을 직접 주고 싶으면
 
 ```bash
-sudo ~/aidas-sender/scripts/bootstrap.sh --host kakao-b200-2
+sudo /tmp/aidas-sender/scripts/bootstrap.sh --host kakao-b200-2
 ```
 새 이름을 지으면 대시보드에서 **다른 서버로 보입니다**(이력이 갈립니다). 그래서
 기본값은 "이 장비가 이미 쓰던 이름" 입니다. 한 장비가 여러 이름으로 보고 중이면
