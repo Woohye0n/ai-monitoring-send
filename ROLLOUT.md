@@ -32,18 +32,30 @@ ls -d /mnt/nas/yunseok/ai-monitoring 2>/dev/null && echo "NAS 마운트 있음"
 
 ---
 
-## 다른 서버에 켜기 — 두 줄
+## 다른 서버에 켜기 — 한 줄
 
 ```bash
-# 1) 코드 받기 (NAS 비번을 scp 가 한 번 물어봅니다)
-scp -P 2244 -r synologynas@aidaslab.synology.me:/volume1/nas-nfs/yunseok/ai-monitoring-send-dist \
-    ~/aidas-sender
-
-# 2) 끝
-sudo ~/aidas-sender/scripts/bootstrap.sh
+curl -fsSL https://woohye0n.github.io/gpu-grants-dashboard/install-sender.sh | sudo bash
 ```
 
-NAS 가 마운트된 서버면 1번은 `cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender`.
+이게 전부입니다. 코드 내려받기부터 전원 설치까지 합니다.
+
+**이미 송신기가 돌던 서버에서는 아무것도 묻지 않습니다** — 그 서버의 `config.json`
+에 NAS 접근 정보가 이미 들어 있기 때문입니다. 없을 때만 **실행 도중에** 물어봅니다.
+
+> 이 설치기에는 NAS 주소도 비밀번호도 없습니다. 서버에서 배워 오므로 공개 주소에
+> 올려둬도 새어나갈 것이 없습니다.
+
+먼저 확인만:
+```bash
+curl -fsSL https://woohye0n.github.io/gpu-grants-dashboard/install-sender.sh | sudo bash -s -- --dry-run
+```
+
+인터넷이 막힌 서버라면 NAS 배포본에서 직접:
+```bash
+cp -r /mnt/nas/yunseok/ai-monitoring-send-dist ~/aidas-sender    # 마운트가 있으면
+sudo ~/aidas-sender/scripts/bootstrap.sh
+```
 
 `bootstrap.sh` 가 **물어보지 않아도 되는 건 묻지 않습니다.**
 
