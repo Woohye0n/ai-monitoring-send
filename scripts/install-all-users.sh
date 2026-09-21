@@ -33,6 +33,38 @@ if [ "$(id -u)" != "0" ] && [ "$DRY" = "0" ]; then
   echo "root 로 실행하세요 (sudo). --dry-run 은 그냥 됩니다." >&2; exit 1
 fi
 
+EXCLUDES=(config.json data .git __pycache__)
+
+# rsync 가 없는 서버가 있다(최소 구성 컨테이너). tar 로 대신한다 — 다만 tar 는
+# 지우지 못하므로 위에 덮어쓰기만 된다(없어진 파일이 남을 수 있다).
+copy_tree() {
+  local src="$1" dest="$2" err
+  if command -v rsync >/dev/null 2>&1; then
+    local args=(-rlt --delete)
+    local e; for e in "${EXCLUDES[@]}"; do args+=(--exclude "$e"); done
+    err="$(rsync "${args[@]}" "$src/" "$dest/" 2>&1)" && return 0
+    # 마지막 줄은 보통 "error in file IO (code 11)" 같은 총평이라 쓸모가 적다.
+    # 원인이 적힌 첫 줄을 함께 보여준다.
+    printf 'rsync: %s' "$(printf '%s' "$err" | grep -m1 -v '^$' | cut -c1-120)"
+    printf ' | %s\n' "$(printf '%s' "$err" | tail -1 | cut -c1-60)"
+    return 1
+  fi
+  local targs=(); local e
+  for e in "${EXCLUDES[@]}"; do targs+=(--exclude "$e"); done
+  err="$( { tar -C "$src" "${targs[@]}" -cf - . | tar -C "$dest" -xf - ; } 2>&1 )" && return 0
+  echo "tar: $(printf '%s' "$err" | grep -m1 -v '^$' | cut -c1-140)"; return 1
+}
+
+# runuser 가 없는 서버도 있다.
+run_as() {
+  local user="$1" home="$2" cmd="$3"
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$user" -- env HOME="$home" bash -c "$cmd" 2>&1
+  else
+    su -s /bin/bash "$user" -c "export HOME='$home'; $cmd" 2>&1
+  fi
+}
+
 uses_ai() {   # claude/codex 를 쓰는 흔적이 있나
   local home="$1" user="$2"
   compgen -G "$home/.claude*" >/dev/null 2>&1 && return 0
@@ -78,19 +110,24 @@ while IFS=: read -r user _ uid _ _ home shell; do
     ok=$((ok+1)); continue
   fi
 
+  # 원본이 목표 안에 있으면 복사가 자기 자신을 덮는다.
+  case "$(readlink -f "$SRC")/" in
+    "$(readlink -f "$dest")"/*) printf '%-14s %-8s %s\n' "$user" "실패" \
+        "원본이 목표 안에 있습니다 ($SRC ⊂ $dest)"; fail=$((fail+1)); continue;;
+  esac
+
   # config.json 과 data/ 는 그 서버·그 사용자의 것이므로 건드리지 않는다.
   mkdir -p "$dest"
-  if ! rsync -rlt --delete --exclude config.json --exclude data --exclude '.git' \
-             --exclude '__pycache__' "$SRC/" "$dest/" >/dev/null 2>&1; then
-    printf '%-14s %-8s %s\n' "$user" "실패" "복사 실패"; fail=$((fail+1)); continue
+  if ! why="$(copy_tree "$SRC" "$dest")"; then
+    printf '%-14s %-8s %s\n' "$user" "실패" "복사 실패 — ${why:-원인 미상}"
+    fail=$((fail+1)); continue
   fi
   chown -R "$user" "$dest" 2>/dev/null
   chmod +x "$dest"/*.sh 2>/dev/null
 
   # 그 사용자의 환경으로 설치한다. setup.sh 는 이미 있는 config.json 을 건드리지
   # 않고 cron 등록과 재시작만 한다.
-  out="$(runuser -u "$user" -- env HOME="$home" bash -c \
-        "cd '$dest' && ./setup.sh --host '$NODE' 2>&1")"
+  out="$(run_as "$user" "$home" "cd '$dest' && ./setup.sh --host '$NODE'")"
   if printf '%s' "$out" | grep -q '^Done\.'; then
     surf="$(printf '%s' "$out" | grep -o 'surfaces\[[^]]*\]' | head -1)"
     printf '%-14s %-8s %s\n' "$user" "OK" "$note ${surf:-}"
