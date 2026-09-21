@@ -193,6 +193,13 @@ while IFS=: read -r user _ uid _ _ home shell; do
         "원본이 목표 안에 있습니다 ($SRC ⊂ $dest)"; fail=$((fail+1)); continue;;
   esac
 
+  # 파일을 갈아끼우기 **전에** 멈춘다. 돌고 있는 프로세스 밑에서 코드를 바꾸는
+  # 창을 아예 없앤다(파이썬이 이미 읽어둔 모듈이라 대개 멀쩡하지만, 대개는
+  # 보장이 아니다). setup.sh 가 뒤에서 다시 띄운다.
+  if [ -x "$dest/stop.sh" ]; then
+    run_as "$user" "$home" "cd '$dest' && ./stop.sh" >/dev/null 2>&1 || true
+  fi
+
   # config.json 과 data/ 는 그 서버·그 사용자의 것이므로 건드리지 않는다.
   mkdir -p "$dest"
   if ! why="$(copy_tree "$SRC" "$dest")"; then
