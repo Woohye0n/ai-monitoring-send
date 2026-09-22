@@ -258,3 +258,54 @@ usage API가 없으므로 값은 rollout 파일의 `rate_limits`(= 실제 API �
 cd ~/ai-monitoring-send && ./stop.sh
 # systemd면: sudo systemctl disable --now ai-monitoring-send
 ```
+
+## 바깥 HTTPS 가 막힌 서버 (카카오 b200 등)
+
+`curl … github.io` 가 `(35) Connection reset by peer` 로 끊기는 클러스터가 있다.
+NAS 는 열려 있고 자격증명도 이미 `config.json` 에 있으니 그쪽으로 받는다.
+
+**최초 1회** — 아직 `update-from-nas.sh` 가 없는 노드. 마지막 줄의 `-- --host …`
+는 이름을 바꿀 때만 붙인다.
+
+```bash
+sudo bash -s <<'SH'
+set -uo pipefail
+D=/tmp/aidas-dist
+rm -rf "$D"                      # 목적지가 있으면 scp -r 이 안에 중첩시킨다
+M=/mnt/nas/yunseok/ai-monitoring-send-dist
+if timeout 5 ls -d "$M" >/dev/null 2>&1; then
+  cp -a "$M" "$D"
+else
+  D="$D" python3 - <<'PY' || exit 1
+import glob, json, os, sys
+src = ""
+for d in sorted(glob.glob("/home/*/ai-monitoring-send")) + ["/root/ai-monitoring-send"]:
+    try:
+        t = json.load(open(d + "/config.json"))["transport"]
+    except Exception:
+        continue
+    if t.get("ssh_host") and (t.get("ssh_password") or t.get("ssh_key")):
+        src = d
+        break
+if not src:
+    sys.exit("자격증명이 든 기존 설치를 못 찾았습니다")
+sys.path.insert(0, src)
+from sender import sshcmd
+t = json.load(open(src + "/config.json"))["transport"]
+sshcmd.scp_get(t, os.path.dirname(t["remote_root"]) + "/ai-monitoring-send-dist",
+               os.environ["D"], recursive=True)
+print("자격증명 출처:", src)
+PY
+fi
+B="$(find "$D" -maxdepth 3 -name bootstrap.sh -path '*/scripts/*' | head -1)"
+[ -n "$B" ] || { echo "배포본이 이상합니다 ($D)"; ls -R "$D" | head; exit 1; }
+echo "버전: $(cat "$(dirname "$(dirname "$B")")/VERSION" 2>/dev/null | head -1)"
+exec bash "$B" "$@"
+SH
+```
+
+**그 다음부터** — 위를 한 번 돌린 노드에는 스크립트가 깔려 있다:
+
+```bash
+sudo bash /home/<사용자>/ai-monitoring-send/scripts/update-from-nas.sh
+```
