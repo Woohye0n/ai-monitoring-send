@@ -228,7 +228,9 @@ def write_marker_ssh(cfg, node, me=None):
     """NAS 를 마운트하지 않은 노드는 마커를 올려 둔다."""
     from . import sshcmd
 
-    root = cfg.get("transport", {}).get("remote_root") or ""
+    # sshcmd 는 전체 config 가 아니라 transport 하위 딕셔너리를 받는다.
+    tr = cfg.get("transport") or cfg
+    root = tr.get("remote_root") or ""
     if not root:
         return False
     me = dict(me or identity())
@@ -237,7 +239,7 @@ def write_marker_ssh(cfg, node, me=None):
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(me, fh)
-        sshcmd.scp_put(cfg, tmp, "%s/inbox/%s/%s" % (root, node, MARKER))
+        sshcmd.scp_put(tr, tmp, "%s/inbox/%s/%s" % (root, node, MARKER))
         return True
     except Exception:                                        # noqa: BLE001
         return False
@@ -251,11 +253,12 @@ def write_marker_ssh(cfg, node, me=None):
 def resolve_ssh(cfg, me=None, exclude=()):
     from . import sshcmd
 
-    root = cfg.get("transport", {}).get("remote_root") or ""
+    tr = cfg.get("transport") or cfg
+    root = tr.get("remote_root") or ""
     if not root:
         return None
     try:
-        out = sshcmd.ssh_exec(cfg, _REMOTE_SCAN.replace("@ROOT@", sshcmd.shquote(root)))
+        out = sshcmd.ssh_exec(tr, _REMOTE_SCAN.replace("@ROOT@", sshcmd.shquote(root)))
     except Exception:                                        # noqa: BLE001
         return None
     me = me or identity()
