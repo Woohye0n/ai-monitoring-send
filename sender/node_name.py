@@ -161,6 +161,7 @@ for d in @ROOT@/inbox/*/; do
   n=$(basename "$d")
   case "$n" in _*) continue;; esac
   printf '== %s\n' "$n"
+  printf 'batches=%s\n' "$(ls "$d"batch-*.json* 2>/dev/null | wc -l)"
   if [ -f "${d}_identity.json" ]; then
     cat "${d}_identity.json"
   else
@@ -180,14 +181,25 @@ def parse_scan(text):
     def flush():
         if not name:
             return
-        blob = "\n".join(buf)
+        # batches= 줄은 신원이 아니다. JSON 으로 읽기 전에 걷어내야 한다.
+        count = 0
+        body = []
+        for line in buf:
+            if line.startswith("batches="):
+                try:
+                    count = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+            else:
+                body.append(line)
+        blob = "\n".join(body)
         ident = None
         try:
             ident = json.loads(blob)
         except Exception:                                    # noqa: BLE001
             ident = {}
             for key in ("fqdn", "machine_id"):
-                for line in buf:
+                for line in body:
                     hit = line.split('"%s"' % key, 1)
                     if len(hit) == 2:
                         val = hit[1].split(":", 1)[-1].strip().strip('}').strip()
@@ -200,7 +212,7 @@ def parse_scan(text):
             # 조각보다 믿을 만하다. 같은 장비에 이름이 여럿 남아 있을 때의
             # 우선순위가 된다.
             out[name] = {"ident": ident, "marker": bool(ident.get("node_id")),
-                         "batches": 0, "mtime": 0}
+                         "batches": count, "mtime": 0}
 
     for line in (text or "").splitlines():
         if line.startswith("== "):
@@ -247,12 +259,16 @@ def resolve_ssh(cfg, me=None, exclude=()):
     except Exception:                                        # noqa: BLE001
         return None
     me = me or identity()
-    hits = [(v.get("marker", False), n) for n, v in parse_scan(out).items()
+    # 로컬 모드와 같은 기준으로 고른다: 마커가 있으면 그것, 없으면 배치가 가장
+    # 많은 이름. 한쪽만 알파벳순으로 고르면 같은 장비가 모드에 따라 다른 이름을
+    # 갖게 된다.
+    hits = [(v.get("marker", False), v.get("batches", 0), n)
+            for n, v in parse_scan(out).items()
             if n not in exclude and same_machine(me, v["ident"])]
     if not hits:
         return None
-    hits.sort(key=lambda h: (not h[0], h[1]))
-    return hits[0][1]
+    hits.sort(key=lambda h: (not h[0], -h[1], h[2]))
+    return hits[0][2]
 
 
 if __name__ == "__main__":

@@ -226,7 +226,26 @@ print("  wrote config.json" + (f"  claude_dirs={cd}" if cd else "")
 PYEOF
   chmod 600 config.json
 else
-  echo "config.json already exists — leaving it as-is (delete it to reconfigure)"
+  # --host 를 직접 준 경우에만 이름을 제자리에서 고친다. 예전에는 이름을 바꾸려면
+  # config.json 을 지우는 수밖에 없었는데, 그러면 NAS 자격증명까지 같이 날아가
+  # 비밀번호를 다시 받아야 했다. 이름 하나 고치자고 치를 대가가 아니다.
+  if [ "$NODE_EXPLICIT" = "1" ]; then
+    "$PY" - "$NODE_ID" <<'PYEOF'
+import json, sys
+want = sys.argv[1]
+cfg = json.load(open("config.json"))
+if cfg.get("node_id") == want:
+    print("config.json already exists — leaving it as-is")
+else:
+    was = cfg.get("node_id")
+    cfg["node_id"] = want
+    json.dump(cfg, open("config.json", "w"), indent=2)
+    print(f"  노드 이름을 '{was}' → '{want}' 로 바꿨습니다 (자격증명은 그대로)")
+PYEOF
+    chmod 600 config.json
+  else
+    echo "config.json already exists — leaving it as-is (delete it to reconfigure)"
+  fi
 fi
 
 # 2) 돌고 있던 송신기를 먼저 멈춘다.

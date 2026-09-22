@@ -45,6 +45,23 @@ check("배치 조각도 읽는다", scan["aidas-a100"]["ident"]["machine_id"], "
 check("조각은 마커가 아니다", scan["aidas-a100"]["marker"], False)
 check("fqdn 이 없으면 후보에서 뺀다", "broken" in scan, False)
 
+print("[4] 이름이 갈라진 장비에서 무엇을 고르는가")
+split = parse_scan("""== gpu-2-0
+batches=784
+ "machine_id": "10433b944b7e6418"
+ "fqdn": "gpu-2-0"
+
+== kakao-b200-2
+batches=887
+ "fqdn": "gpu-2-0"
+""")
+check("batches 를 읽는다", split["gpu-2-0"]["batches"], 784)
+check("구버전이라 mid 가 없어도 같은 장비로 본다",
+      same_machine(split["gpu-2-0"]["ident"], split["kakao-b200-2"]["ident"]), True)
+hits = sorted(((v["marker"], -v["batches"], n) for n, v in split.items()))
+check("배치가 많은 쪽을 고른다(알파벳순 아님)", hits[0][2], "kakao-b200-2")
+
+
 if fails:
     print(f"실패 {len(fails)}건: {', '.join(fails)}")
     sys.exit(1)
