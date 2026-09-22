@@ -38,8 +38,8 @@ SSH_PASSWORD='<NAS_PASSWORD>' ./setup.sh        # 끝. 비번 자동입력으로
 > 떨어진 것입니다. 다음 중 하나로 해결하세요 (setup.sh가 이후 나머지 스크립트
 > 권한은 자동 복구합니다):
 > ```bash
-> bash setup.sh --host <이름>          # 실행 비트 없이 바로 실행, 또는
-> chmod +x *.sh && ./setup.sh --host <이름>
+> bash setup.sh                        # 실행 비트 없이 바로 실행, 또는
+> chmod +x *.sh && ./setup.sh
 > ```
 
 `SSH_PASSWORD`를 안 주면 한 번 물어봅니다(이후 `config.json`에 저장, chmod 600).
@@ -329,3 +329,17 @@ python3 tests/test_discovery.py
 표면 분류, 홈 밖 디렉토리 탐지, 설정이 다른 디렉토리를 가리지 않는지,
 Claude/Codex 디렉토리 오인, 부트스트랩 가드를 검사합니다. 표준 라이브러리만
 쓰므로 어느 서버에서나 그대로 돕니다.
+
+### 노드 이름은 자동입니다
+
+`--host` 는 선택입니다. 이름은 이 순서로 정해집니다:
+
+1. 기존 `config.json` 의 `node_id` — 업그레이드로 이름이 바뀌지 않게
+2. **NAS 기록** — 이 장비가 이미 쓰던 이름을 물려받습니다
+3. `hostname` — 처음 등록하는 장비
+
+판별은 `fqdn` 으로 합니다. `machine_id` 는 보강으로만 씁니다 — 같은 컨테이너
+이미지로 뜬 파드 4개가 `/etc/machine-id` 를 공유해 값이 전부 같았고,
+그것만 보면 서로 다른 노드가 하나로 합쳐집니다.
+
+새 장비에 원하는 이름을 붙일 때만 `--host <이름>` 을 주세요.

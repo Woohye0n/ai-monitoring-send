@@ -154,7 +154,7 @@ cd ~/ai-monitoring-send && git pull && ./stop.sh && ./start.sh && ./status.sh
 ```
 설정은 그대로 두면 됩니다. 자동 재시작(cron)이 아직 없다면 한 번 더:
 ```bash
-./setup.sh --host <기존과 같은 이름>    # config.json 이 있으면 건드리지 않고 cron 만 등록
+./setup.sh                              # 이름은 config.json → NAS 기록 → hostname 순으로 자동
 ```
 
 ---
@@ -173,7 +173,7 @@ cd ~/ai-monitoring-send && git pull && ./stop.sh && ./start.sh && ./status.sh
 > ```
 > <!-- NAS 마운트가 없는 서버면 위 마지막 줄을 아래로 바꿔 공지하세요
 >      SSH_PASSWORD='<NAS 비밀번호>' ./setup.sh
->      hostname 이 장비 이름이 아니면  ./setup.sh --host <관리자가 공지한 이름>  -->
+>      이 장비를 처음 등록하며 이름을 직접 붙이고 싶을 때만  ./setup.sh --host <이름>  -->
 >
 > 끝입니다. **평소처럼 쓰시면 됩니다** — 터미널이든 VSCode 사이드바든,
 > `claude`·`codex` 를 어떻게 실행하든 알아서 잡습니다. 설정할 것 없습니다.
@@ -249,7 +249,7 @@ hgkim_AIDAS_A100           3분  hgkim          3  vscode=204 terminal=9
 
 | 증상 | 원인 / 조치 |
 |---|---|
-| 최신 배치가 며칠 전 | sender 가 죽었고 cron 도 없음 → `./setup.sh --host <같은이름>` 로 워치독 등록 |
+| 최신 배치가 며칠 전 | sender 가 죽었고 cron 도 없음 → `./setup.sh` 로 워치독 등록 |
 | `diagnostics.uncollected` 가 비지 않음 | 쓰이는데 아무도 안 읽는 디렉토리 — `exclude_dirs` 로 뺀 게 아니면 버그이니 알려주세요 |
 | `surfaces` 에 `terminal` 만 | 사이드바를 쓰는 사람인데 안 잡히는 중. 그 서버에서 `python3 scripts/where-landed.py` |
 | 같은 장비가 여러 노드 | 이름 통일 후 재설치. 새 배치의 `machine_id` 가 같으면 같은 장비입니다 |

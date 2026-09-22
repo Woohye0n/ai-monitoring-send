@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 이 서버의 모든 사용자에게 송신기를 설치/갱신한다. **root 로 실행한다.**
 #
-#   sudo ./scripts/install-all-users.sh --host <노드이름> --dry-run
-#   sudo ./scripts/install-all-users.sh --host <노드이름>
+#   sudo ./scripts/install-all-users.sh                       # 이름 자동
+#   sudo ./scripts/install-all-users.sh --dry-run
+#   sudo ./scripts/install-all-users.sh --host <노드이름>   # 새 장비에 이름을 붙일 때
 #
 # 왜 root 가 필요한가: 송신기는 **그 사용자의 홈만** 읽는다(/proc 권한이 남의
 # 것을 막아 준다 — 그게 맞는 경계다). 그래서 사람마다 자기 계정으로 하나씩
@@ -30,7 +31,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$NODE" ] || { echo "--host <노드이름> 이 필요합니다 (이 장비의 이름, 전원 동일)" >&2; exit 1; }
+# --host 는 이제 선택이다. 비워 두면 각 사용자의 setup.sh 가 NAS 에 남은 기록에서
+# 이 장비의 이름을 스스로 찾고, 없으면 hostname 을 쓴다. 한 장비의 사용자들이
+# 제각기 다른 이름을 고르던 문제도 같이 없어진다.
+if [ -z "$NODE" ]; then
+  echo "노드 이름을 지정하지 않았습니다 — NAS 기록에서 자동으로 찾습니다."
+fi
 [ -f "$SRC/setup.sh" ] || { echo "원본이 아닙니다: $SRC" >&2; exit 1; }
 if [ "$(id -u)" != "0" ] && [ "$DRY" = "0" ]; then
   echo "root 로 실행하세요 (sudo). --dry-run 은 그냥 됩니다." >&2; exit 1
@@ -247,7 +253,8 @@ while IFS=: read -r user _ uid _ _ home shell; do
     chown "$user" "$pwtmp" 2>/dev/null
     cred="--password \"\$(cat '$pwtmp')\""
   fi
-  out="$(run_as "$user" "$home" "cd '$dest' && ./setup.sh --host '$NODE' $cred")"
+  host_arg=""; [ -n "$NODE" ] && host_arg="--host '$NODE'"
+  out="$(run_as "$user" "$home" "cd '$dest' && ./setup.sh $host_arg $cred")"
   [ -n "${pwtmp:-}" ] && { rm -f "$pwtmp"; pwtmp=""; }
   if printf '%s' "$out" | grep -q '^Done\.'; then
     surf="$(printf '%s' "$out" | grep -o 'surfaces\[[^]]*\]' | head -1)"

@@ -27,7 +27,8 @@ PY="${PYTHON:-python3}"
 chmod +x ./*.sh 2>/dev/null || true
 
 MODE="ssh"
-NODE_ID="${HOST_ID:-${NODE_ID:-$(hostname)}}"
+NODE_ID="${HOST_ID:-${NODE_ID:-}}"
+NODE_EXPLICIT=0   # --host 를 직접 줬는가
 INTERVAL="${INTERVAL:-300}"
 SSH_HOST="${SSH_HOST:-aidaslab.synology.me}"
 SSH_PORT="${SSH_PORT:-2244}"
@@ -46,7 +47,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --local) MODE="local"; shift;;
     --nas) NAS_ROOT="$2"; shift 2;;
-    --host) NODE_ID="$2"; shift 2;;
+    --host) NODE_ID="$2"; NODE_EXPLICIT=1; shift 2;;
     --interval) INTERVAL="$2"; shift 2;;
     --ssh-host) SSH_HOST="$2"; shift 2;;
     --ssh-port) SSH_PORT="$2"; shift 2;;
@@ -66,15 +67,13 @@ done
 command -v "$PY" >/dev/null || { echo "python3 not found (set PYTHON=...)"; exit 1; }
 PY_ABS="$(command -v "$PY")"
 
-# A node name must identify the MACHINE, not the person installing it. Three
-# users on one box each picked their own --host, so one server showed up as
-# three on the dashboard. Reject names that cannot possibly be a server name.
-case "$(printf '%s' "$NODE_ID" | tr 'A-Z' 'a-z')" in
-  ""|localhost|localhost.localdomain|ubuntu|debian|server|servername|node|host|pc|desktop)
-    echo "ERROR: 호스트 이름이 '$NODE_ID' 라 노드 이름으로 쓸 수 없습니다." >&2
-    echo "       관리자가 정한 서버 이름으로 --host <이름> 을 주세요." >&2
-    exit 1;;
-esac
+# 이미 config.json 이 있으면 거기 적힌 이름이 최우선이다. 업그레이드하려고
+# 다시 돌릴 때 이름이 바뀌어 히스토리가 갈라지면 안 된다.
+if [ "$NODE_EXPLICIT" = "0" ] && [ -z "$NODE_ID" ] && [ -f config.json ]; then
+  NODE_ID="$("$PY" -c 'import json;print(json.load(open("config.json")).get("node_id") or "")' 2>/dev/null || true)"
+  [ -n "$NODE_ID" ] && NODE_SRC="config.json"
+fi
+
 
 # If the NAS is already mounted, no credential is needed at all. Handing the NAS
 # password to every user on a shared box is both a risk and an extra way for the
@@ -89,8 +88,60 @@ if [ "$MODE" = "ssh" ] && [ "$FORCE_SSH" = "0" ] && [ -z "$SSH_PASSWORD" ] && [ 
   fi
 fi
 
+# 이 장비가 이미 어떤 이름으로 보고하고 있었는지 NAS 에 물어본다. 사람이
+# --host 를 외워서 넣지 않아도 되고, 같은 서버가 이름 여러 개로 갈리지도
+# 않는다. 판별은 fqdn 으로 한다 — 같은 컨테이너 이미지로 뜬 파드들은
+# machine_id 가 전부 같아서, 그것만 보면 서로 다른 노드가 하나로 합쳐진다.
+if [ "$NODE_EXPLICIT" = "0" ] && [ -z "$NODE_ID" ]; then
+  if [ "$MODE" = "local" ]; then
+    FOUND="$(PYTHONPATH=. "$PY" -m sender.node_name --nas "$NAS_ROOT" 2>/dev/null || true)"
+  else
+    # config.json 은 아직 없다(아래에서 만든다). 자격증명을 명령줄에 노출하지
+    # 않도록 환경변수로 넘긴다.
+    FOUND="$(SSH_HOST="$SSH_HOST" SSH_PORT="$SSH_PORT" SSH_USER="$SSH_USER" \
+             SSH_PASSWORD="$SSH_PASSWORD" SSH_KEY="$SSH_KEY" REMOTE_ROOT="$REMOTE_ROOT" \
+             PYTHONPATH=. "$PY" - <<'PYEOF' 2>/dev/null || true
+import json, os
+from sender import node_name
+try:
+    cfg = json.load(open("config.json"))
+except OSError:
+    cfg = {"transport": {
+        "mode": "ssh",
+        "ssh_host": os.environ.get("SSH_HOST", ""),
+        "ssh_port": int(os.environ.get("SSH_PORT") or 22),
+        "ssh_user": os.environ.get("SSH_USER", ""),
+        "ssh_password": os.environ.get("SSH_PASSWORD", ""),
+        "ssh_key": os.environ.get("SSH_KEY", ""),
+        "remote_root": os.environ.get("REMOTE_ROOT", ""),
+    }}
+print(node_name.resolve_ssh(cfg) or "")
+PYEOF
+)"
+  fi
+  if [ -n "$FOUND" ]; then
+    NODE_ID="$FOUND"; NODE_SRC="NAS 기록"
+  fi
+fi
+
+# 아무 데서도 못 찾으면 호스트 이름. 새 장비의 첫 설치가 여기로 온다.
+if [ -z "$NODE_ID" ]; then
+  NODE_ID="$(hostname)"; NODE_SRC="hostname"
+fi
+[ "$NODE_EXPLICIT" = "1" ] && NODE_SRC="--host"
+
+# A node name must identify the MACHINE, not the person installing it. Three
+# users on one box each picked their own --host, so one server showed up as
+# three on the dashboard. Reject names that cannot possibly be a server name.
+case "$(printf '%s' "$NODE_ID" | tr 'A-Z' 'a-z')" in
+  ""|localhost|localhost.localdomain|ubuntu|debian|server|servername|node|host|pc|desktop)
+    echo "ERROR: 호스트 이름이 '$NODE_ID' 라 노드 이름으로 쓸 수 없습니다." >&2
+    echo "       관리자가 정한 서버 이름으로 --host <이름> 을 주세요." >&2
+    exit 1;;
+esac
+
 echo
-echo "  노드 이름: $NODE_ID   (전송: $MODE)"
+echo "  노드 이름: $NODE_ID   (출처: ${NODE_SRC:-hostname}, 전송: $MODE)"
 echo "  ⚠ 이 장비의 모든 사용자가 같은 노드 이름을 써야 합니다."
 echo "    다르면 대시보드에 서버가 여러 대로 보입니다."
 echo
@@ -195,64 +246,34 @@ echo "running a one-shot collection + delivery test…"
 PYTHONPATH=. "$PY" -m sender.main --once || {
   echo "one-shot failed — check the SSH host/port/user/password above"; exit 1; }
 
-# 2b) Is this machine already reporting under a different name? Every batch now
-# carries a hashed machine id, so when the NAS is readable we can simply look.
-# Catching it here is the only cheap moment: afterwards it is a dashboard that
-# quietly shows one server as several.
-if [ "$MODE" = "local" ]; then
-  "$PY" - "$NAS_ROOT" "$NODE_ID" <<'PYEOF' || true
-import glob, gzip, hashlib, json, os, socket, sys
+# 2b) 신원 마커를 남긴다. 다음 설치가 --host 없이도 이 장비의 이름을 한 번의
+# 조회로 찾아낸다. 그리고 --host 를 직접 준 경우에만, 같은 장비가 다른 이름으로
+# 이미 보고 중인지 확인해 준다 — 자동으로 고른 이름은 애초에 그 조회 결과다.
+"$PY" - "$NAS_ROOT" "$NODE_ID" "$MODE" "$NODE_EXPLICIT" <<'PYEOF' || true
+import json, os, sys
+sys.path.insert(0, os.getcwd())
+from sender import node_name
 
-nas, node = sys.argv[1], sys.argv[2]
-
-
-def machine_id():
-    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
-        try:
-            raw = open(path, encoding="utf-8").read().strip()
-        except OSError:
-            continue
-        if raw:
-            return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-    return None
-
-
-def local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+nas, node, mode, explicit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+me = node_name.identity()
+if mode == "local":
+    node_name.write_marker(nas, node, me)
+    other = node_name.resolve(nas, me, exclude=[node])
+else:
     try:
-        s.settimeout(1)
-        s.connect(("8.8.8.8", 53))
-        return s.getsockname()[0]
+        cfg = json.load(open("config.json"))
     except OSError:
-        return None
-    finally:
-        s.close()
-
-
-mine, fqdn, ip = machine_id(), socket.getfqdn(), local_ip()
-for d in sorted(glob.glob(os.path.join(nas, "inbox", "*"))):
-    other = os.path.basename(d)
-    if other == node or not os.path.isdir(d):
-        continue
-    batches = sorted(glob.glob(os.path.join(d, "batch-*.json*")))[-1:]
-    if not batches:
-        continue
-    try:
-        f = batches[0]
-        data = json.load(gzip.open(f) if f.endswith(".gz") else open(f, "rb"))
-    except Exception:                                       # noqa: BLE001
-        continue
-    # machine_id only exists in batches written by an upgraded sender, so on the
-    # first rollout fall back to fqdn+ip -- which is what actually exposed the
-    # three names on this cluster in the first place.
-    same = (mine and data.get("machine_id") == mine) or (
-        fqdn and ip and data.get("fqdn") == fqdn and data.get("ip") == ip)
-    if same:
-        print(f"  ⚠ 이 장비는 이미 '{other}' 라는 이름으로 보고되고 있습니다"
-              f" (os_user={data.get('os_user')}).")
-        print(f"    같은 이름을 쓰세요:  rm -f config.json && ./setup.sh --host {other}")
+        cfg = {}
+    if cfg:
+        node_name.write_marker_ssh(cfg, node, me)
+        other = node_name.resolve_ssh(cfg, me, exclude=[node])
+    else:
+        other = None
+if other and explicit:
+    print(f"  \u26a0 이 장비는 '{other}' 라는 이름으로도 보고되고 있습니다.")
+    print(f"    한 장비는 이름 하나여야 합니다. --host 를 빼고 다시 돌리면"
+          f" 자동으로 '{other}' 를 씁니다.")
 PYEOF
-fi
 
 if [ "$USE_SYSTEMD" = "1" ]; then
   cat <<UNIT

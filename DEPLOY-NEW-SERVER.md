@@ -55,11 +55,11 @@ rsync -av --exclude data --exclude config.json \
 
 NAS 가 **마운트 안 된** 서버 (기본 = SSH 전송):
 ```bash
-SSH_PASSWORD='<NAS_PASSWORD>' ./setup.sh --host <서버이름>
+SSH_PASSWORD='<NAS_PASSWORD>' ./setup.sh
 ```
 NAS 가 **마운트된** 서버:
 ```bash
-./setup.sh --local --nas /mnt/nas/yunseok/ai-monitoring --host <서버이름>
+./setup.sh --local --nas /mnt/nas/yunseok/ai-monitoring
 ```
 
 | 인자 | 기본값 | 설명 |
@@ -88,7 +88,7 @@ NAS 가 **마운트된** 서버:
   ```bash
   ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519_nas -q
   cat ~/.ssh/id_ed25519_nas.pub    # NAS 의 ~/.ssh/authorized_keys 에 추가
-  rm -f config.json && ./setup.sh --key ~/.ssh/id_ed25519_nas --host <서버이름>
+  rm -f config.json && ./setup.sh --key ~/.ssh/id_ed25519_nas
   ```
 - `kex_exchange_identification: Connection reset by peer` → 연결 폭주. 최신
   코드는 배송 1건이 SSH 연결 1개만 쓰므로(다중화) 이 오류는 `git pull` 후 사라집니다.

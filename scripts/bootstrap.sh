@@ -126,4 +126,5 @@ trap '[ -n "${PWF:-}" ] && shred -u "$PWF" 2>/dev/null || true' EXIT
 say "4/4  설치"
 # bash 로 부른다: /tmp 에 받아두는 경우 noexec 마운트라 실행 비트가 있어도
 # 직접 실행이 막힐 수 있다.
-bash "$ROOT/scripts/install-all-users.sh" --host "$NODE" "${CRED[@]}" ${PASS[@]+"${PASS[@]}"}
+HOST_ARG=(); [ -n "$NODE" ] && HOST_ARG=(--host "$NODE")
+bash "$ROOT/scripts/install-all-users.sh" ${HOST_ARG[@]+"${HOST_ARG[@]}"} "${CRED[@]}" ${PASS[@]+"${PASS[@]}"}

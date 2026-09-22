@@ -21,6 +21,9 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sender import node_name  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_NAS = "/mnt/nas/yunseok/ai-monitoring"
 
@@ -59,13 +62,27 @@ def ago(ms):
     return f"{int(s / 86400)}일"
 
 
-def machine_key(b):
-    """같은 장비인지 판별할 키. 구 배치에는 machine_id 가 없어 fqdn+ip 로 떨어진다."""
-    if b.get("machine_id"):
-        return ("mid", b["machine_id"])
-    if b.get("fqdn") and b.get("ip"):
-        return ("net", b["fqdn"], b["ip"])
-    return None
+def machine_ident(b):
+    """같은 장비인지 볼 때 쓰는 신원. 판단 자체는 node_name.same_machine 이 한다.
+
+    단순한 동등 키로는 안 된다: gpu-2-0 은 machine_id 를 보내고 kakao-b200-2 는
+    (구버전이라) 안 보내는데 둘은 같은 노드다. 한쪽에만 있는 값은 무시해야 해서
+    키 비교가 아니라 술어 비교가 필요하다.
+    """
+    return {"fqdn": b.get("fqdn"), "machine_id": b.get("machine_id")}
+
+
+def group_machines(idents):
+    """같은 장비끼리 묶는다. 노드 수가 열 몇 개라 단순 비교로 충분하다."""
+    groups = []
+    for node, ident in idents.items():
+        for g in groups:
+            if node_name.same_machine(ident, g["ident"]):
+                g["nodes"].append(node)
+                break
+        else:
+            groups.append({"ident": ident, "nodes": [node]})
+    return [g["nodes"] for g in groups if len(g["nodes"]) > 1]
 
 
 def main(argv=None):
@@ -80,7 +97,7 @@ def main(argv=None):
         print(f"inbox 를 못 찾았습니다: {inbox}", file=sys.stderr)
         return 2
 
-    rows, by_machine, problems = [], {}, []
+    rows, idents, problems = [], {}, []
     for node_dir in sorted(glob.glob(os.path.join(inbox, "*"))):
         if not os.path.isdir(node_dir):
             continue
@@ -106,9 +123,9 @@ def main(argv=None):
                      str(len(diag.get("dirs") or [])) if diag else "-",
                      " ".join(f"{k}={v}" for k, v in sorted((surfaces or {}).items())) or "-",
                      " ".join(flags)))
-        key = machine_key(b)
-        if key:
-            by_machine.setdefault(key, []).append(node)
+        diag_ident = machine_ident(b)
+        if diag_ident.get("fqdn"):
+            idents[node] = diag_ident
         for w in diag.get("warnings") or []:
             problems.append(f"{node}: {w}")
         for u in diag.get("uncollected") or []:
@@ -119,11 +136,12 @@ def main(argv=None):
     for node, age, user, dirs, surf, flags in rows:
         print(f"{node:<22} {age:>6}  {user:<11} {dirs:>4}  {surf:<26} {flags}")
 
-    dupes = {k: v for k, v in by_machine.items() if len(v) > 1}
+    dupes = group_machines(idents)
     if dupes:
         print("\n같은 장비가 여러 노드로 보고 중 — 이름을 하나로 통일하세요:")
-        for nodes in dupes.values():
+        for nodes in dupes:
             print(f"  {' = '.join(sorted(nodes))}")
+        print("  고치려면 그 장비에서 config.json 을 지우고 --host 없이 다시 설치하세요.")
 
     if problems:
         print("\n확인이 필요한 것:")
