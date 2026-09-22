@@ -349,6 +349,58 @@ try:
 finally:
     discovery.iter_processes = _real_iter
 
+# ------------------------------------------------ codex 턴 귀속 기준점
+print("\n[7] codex 턴이 '직전 폴링' 창을 놓쳐도 귀속되는가")
+import datetime as _dt                                            # noqa: E402
+
+_tmp = tempfile.mkdtemp(prefix="aidas-codex-")
+try:
+    cdir = os.path.join(_tmp, "cx")
+    _day = os.path.join(cdir, "sessions", "2026", "09", "22")
+    os.makedirs(_day)
+    json.dump({"tokens": {"account_id": "acc1",
+                          "id_token": "x.eyJlbWFpbCI6ImxhYkB4LmNvbSJ9.y"}},
+              open(os.path.join(cdir, "auth.json"), "w"))
+    roll = os.path.join(_day, "rollout-2026-09-22T00-00-00-1111-2222-3333-4444-5555.jsonl")
+
+    def _turn(ts_ms, meta=False):
+        iso = _dt.datetime.fromtimestamp(ts_ms / 1000, _dt.timezone.utc).isoformat()
+        with open(roll, "a", encoding="utf-8") as fh:
+            if meta:
+                fh.write(json.dumps({"type": "session_meta", "timestamp": iso, "payload": {
+                    "id": "cx1", "cwd": "/w", "originator": "codex_cli_rs", "source": "cli"}}) + "\n")
+            fh.write(json.dumps({"type": "event_msg", "timestamp": iso, "payload": {
+                "type": "token_count", "info": {"last_token_usage": {
+                    "input_tokens": 100, "cached_input_tokens": 0, "output_tokens": 50}}}}) + "\n")
+
+    _turn(time.time() * 1000 - 600_000, meta=True)     # 10분 전 턴
+    col = CodexCollector(cdir, host="t", bootstrap_days=0)
+    col.collect()                                       # 폴링1: 계정 확인
+    first_poll = time.time() * 1000
+    time.sleep(0.3)
+    col.collect()                                       # 폴링2: 변화 없음
+    time.sleep(0.3)
+    # 폴링1 직후 시각의 턴이 뒤늦게 기록된다(=직전 폴링보다 오래된 턴).
+    # 예전 규칙(기준점=직전 폴링)은 이걸 영영 버렸다 — 실측으로 5시간에 63M 토큰.
+    _turn(first_poll + 100)
+    res = col.collect()
+    attributed = [u for u in res["usage"] if not u["assumed"]]
+    check("직전 폴링보다 오래된 턴도 귀속한다", len(attributed), 1)
+    check("토큰이 그대로 실린다",
+          sum(u["input_tokens"] + u["output_tokens"] for u in attributed), 150)
+
+    # 계정이 실제로 바뀌면 그 이전 턴은 여전히 미확정이어야 한다
+    json.dump({"tokens": {"account_id": "acc2",
+                          "id_token": "x.eyJlbWFpbCI6Im90aGVyQHguY29tIn0=.y"}},
+              open(os.path.join(cdir, "auth.json"), "w"))
+    time.sleep(0.3)
+    _turn(first_poll + 200)                             # 전환 전 시각의 턴
+    res = col.collect()
+    check("계정이 바뀌면 그 이전 턴은 남의 것으로 세지 않는다",
+          [u for u in res["usage"] if not u["assumed"]], [])
+finally:
+    shutil.rmtree(_tmp, ignore_errors=True)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

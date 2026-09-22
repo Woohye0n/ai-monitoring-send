@@ -113,13 +113,20 @@ class CodexCollector:
         # user's dashboard card.  Cached PER WINDOW so a newer event that only
         # carries the weekly window can't erase the last known 5h value.
         self._rl_cache = {}  # {(account_id, email): {window: (ts_ms, data)}}
-        # Account-boundary protection.  A rollout carries no account of its own,
+        # Account-boundary protection.  A rollout carries no account of its own
         # and a changed file is re-parsed in full, so labelling every turn with
         # whatever account is logged in *now* would retroactively relabel turns
-        # written under a previous login.  A turn is only attributable when its
-        # own event timestamp falls after the previous poll AND the account was
-        # unchanged across those two polls -- no other account could have
-        # written it in that window.
+        # written under a previous login.
+        #
+        # The cutoff is **when this login was first seen**, not "the previous
+        # poll".  Both are safe -- no other account could have written a turn
+        # after the current one logged in -- but the per-poll version lost
+        # anything it did not happen to catch in that 5-minute window, and it
+        # never got a second chance (a later re-parse compares against a newer
+        # poll time).  Measured on this cluster: 405 turns / 63M tokens in five
+        # hours, about half of all Codex usage, dropped that way.
+        self._account_since_ms = 0
+        self._known_identity = None
         self._last_poll_ms = 0
         self._last_account_identity = None
         # rollout path -> its session_meta payload.  A file that did not change
@@ -228,10 +235,11 @@ class CodexCollector:
     def _parse_rollout(self, path, email, attributable_after_ms=None):
         """Parse one rollout.
 
-        ``attributable_after_ms`` is the cutoff described in ``__init__``: turns
-        at or after it belong to ``email``; earlier ones are emitted as
-        ``assumed`` (no account) so ingestion drops them instead of crediting
-        them to the wrong login.  ``None`` makes every turn assumed.
+        ``attributable_after_ms`` is the cutoff described in ``__init__`` -- the
+        moment this login was first observed.  Turns at or after it belong to
+        ``email``; earlier ones are emitted as ``assumed`` (no account) so
+        ingestion drops them instead of crediting them to the wrong login.
+        ``None`` makes every turn assumed.
         """
         meta = {}
         model = None
@@ -320,12 +328,15 @@ class CodexCollector:
         account = self.read_account()
         email = account["email"] if account else None
         account_key = ((account.get("account_id") or "", email) if account else None)
-        # Only a login that was already in place at the previous poll can claim
-        # turns; right after a switch nothing is attributable until the next
-        # cycle establishes the new account as stable.
-        account_stable = bool(account_key and account_key == self._last_account_identity)
-        attributable_after_ms = self._last_poll_ms if account_stable else None
         now_ms = int(time.time() * 1000)
+        # 이 로그인이 언제부터였나.  auth.json 을 한 번 못 읽는 일(토큰 갱신 중
+        # 같은)은 계정이 바뀐 것이 아니므로 기준점을 되돌리지 않는다 -- 되돌리면
+        # 그 구간의 턴이 통째로 미확정이 된다.
+        if account_key is not None and account_key != self._known_identity:
+            self._known_identity = account_key
+            self._account_since_ms = now_ms
+        attributable_after_ms = (self._account_since_ms
+                                 if account_key and self._account_since_ms else None)
         cutoff_ms = (now_ms - self.bootstrap_days * 86400 * 1000
                      if self.bootstrap_days else 0)
         records, updated, sessions = [], {}, []
