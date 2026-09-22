@@ -59,6 +59,9 @@ _NOT_A_DIR_SUFFIX = (".lock", ".bak", ".json", ".log", ".tmp", ".real")
 
 
 # ----------------------------------------------------------------- surfaces
+_TERMINAL_WORDS = frozenset({"cli", "terminal", "tui", "shell"})
+
+
 def normalize_surface(*values):
     """Map a tool's own entrypoint/originator strings onto a shared vocabulary.
 
@@ -80,7 +83,11 @@ def normalize_surface(*values):
             return VSCODE
         if "desktop" in low or low == "app":
             return DESKTOP
-        if low in ("cli", "terminal", "tui", "shell") or "cli" in re.split(r"[_\-\s]", low):
+        # Match on the tokens, not the whole string: Codex reports its terminal
+        # UI as "codex-tui", which an equality test against "tui" misses and
+        # which then shows up on the dashboard as a bogus "other:" surface.
+        parts = set(re.split(r"[_\-\s]", low))
+        if low in _TERMINAL_WORDS or parts & _TERMINAL_WORDS:
             return TERMINAL
         if low.startswith("sdk") or low in ("mcp", "api", "agent"):
             return SDK

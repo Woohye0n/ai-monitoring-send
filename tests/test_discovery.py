@@ -89,6 +89,8 @@ print("\n[1] 표면 분류 — 실제로 관측된 값들")
 check("claude 터미널", discovery.normalize_surface("cli"), "terminal")
 check("claude 사이드바", discovery.normalize_surface("vscode"), "vscode")
 check("codex 터미널", discovery.normalize_surface("codex_cli_rs", "cli"), "terminal")
+check("codex tui", discovery.normalize_surface("codex-tui"), "terminal")
+check("codex tui + source", discovery.normalize_surface("codex-tui", "tui"), "terminal")
 check("codex 사이드바", discovery.normalize_surface("codex_vscode", "vscode"), "vscode")
 # 데스크탑 앱도 source='vscode' 를 보낸다 — originator 를 먼저 보지 않으면 뭉갠다
 check("codex 데스크탑", discovery.normalize_surface("Codex Desktop", "vscode"), "desktop")
