@@ -10,7 +10,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${DIST:-/mnt/nas/yunseok/ai-monitoring-send-dist}"
 [ -d "$(dirname "$DIST")" ] || { echo "NAS 가 안 보입니다: $DIST" >&2; exit 1; }
 mkdir -p "$DIST"
-rsync -rlt --delete --no-g --no-p --no-o \
+# --delete-excluded 가 없으면 '제외' 는 '보내지 않는다' 일 뿐, 받는 쪽에 이미
+# 있는 것은 지켜진다. 배포본에서 테스트를 한 번 돌렸더니 __pycache__ 가 생겼고,
+# 그 뒤로 계속 남아 각 서버로 실려 갔다(홈 쿼터가 빠듯한 노드에는 부담이다).
+rsync -rlt --delete --delete-excluded --no-g --no-p --no-o \
       --exclude .git --exclude config.json --exclude data --exclude __pycache__ \
       "$ROOT/" "$DIST/" || exit 1
 # NAS 에서는 SSH 계정(synologynas)이 이 파일들을 읽어 가야 한다. rsync 가 남기는

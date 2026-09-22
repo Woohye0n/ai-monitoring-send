@@ -204,6 +204,16 @@ while IFS=: read -r user _ uid _ _ home shell; do
   mkdir -p "$dest"
   if ! why="$(copy_tree "$SRC" "$dest")"; then
     printf '%-14s %-8s %s\n' "$user" "실패" "복사 실패 — ${why:-원인 미상}"
+    case "$why" in
+      *quota*|*"No space"*|*"공간"*)
+        used="$(du -sh "$dest/data" 2>/dev/null | cut -f1)"
+        nout="$(ls "$dest/data/outbox" 2>/dev/null | wc -l)"
+        printf '%-14s %-8s %s\n' "" "" \
+          "홈 용량이 찼습니다. 이 설치의 data/ 가 ${used:-?} (미전송 배치 ${nout}개)"
+        printf '%-14s %-8s %s\n' "" "" \
+          "정리: du -sh ~/.codex ~/.claude* $dest/data 로 큰 곳을 먼저 보세요"
+        ;;
+    esac
     fail=$((fail+1)); continue
   fi
   chown -R "$user" "$dest" 2>/dev/null
