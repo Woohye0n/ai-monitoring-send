@@ -135,10 +135,25 @@ def resolve(nas_root, me=None, exclude=()):
     return hits[0][2]
 
 
+def claimed_by(nas_root, node):
+    """이 노드 이름을 이미 쓰고 있는 다른 장비. 없으면 None."""
+    ident = _read_json(os.path.join(nas_root, "inbox", node, MARKER))
+    return ident if ident and ident.get("fqdn") else None
+
+
 def write_marker(nas_root, node, me=None):
-    """다음 설치가 한 번의 읽기로 찾을 수 있도록 신원을 남긴다."""
+    """다음 설치가 한 번의 읽기로 찾을 수 있도록 신원을 남긴다.
+
+    이미 다른 장비가 이 이름을 쓰고 있으면 덮어쓰지 않는다. 실제로 gpu-1-0 에서
+    --host kakao-b200-2 를 잘못 줘서, gpu-2-0 의 마커가 gpu-1-0 것으로 바뀌었다.
+    그러면 두 장비가 한 이름으로 보고하는데 마커는 한쪽만 가리켜, 다음 설치의
+    자동 해석까지 같이 틀어진다.
+    """
     me = dict(me or identity())
     me["node_id"] = node
+    other = claimed_by(nas_root, node)
+    if other and not same_machine(me, other):
+        return False
     d = os.path.join(nas_root, "inbox", node)
     try:
         os.makedirs(d, exist_ok=True)
@@ -224,6 +239,23 @@ def parse_scan(text):
     return out
 
 
+def resolve_marker_ssh(cfg, node):
+    """원격 inbox/<node>/_identity.json 하나만 읽는다."""
+    from . import sshcmd
+
+    tr = cfg.get("transport") or cfg
+    root = tr.get("remote_root") or ""
+    if not root:
+        return None
+    try:
+        out = sshcmd.ssh_exec(tr, "cat %s 2>/dev/null" % sshcmd.shquote(
+            "%s/inbox/%s/%s" % (root, node, MARKER)))
+        ident = json.loads(out.strip() or "null")
+    except Exception:                                        # noqa: BLE001
+        return None
+    return ident if isinstance(ident, dict) and ident.get("fqdn") else None
+
+
 def write_marker_ssh(cfg, node, me=None):
     """NAS 를 마운트하지 않은 노드는 마커를 올려 둔다."""
     from . import sshcmd
@@ -235,6 +267,10 @@ def write_marker_ssh(cfg, node, me=None):
         return False
     me = dict(me or identity())
     me["node_id"] = node
+    # 로컬과 같은 이유로, 남의 이름을 뺏지 않는다.
+    other = resolve_marker_ssh(cfg, node)
+    if other and not same_machine(me, other):
+        return False
     tmp = os.path.join(tempfile.gettempdir(), "_identity.%d.json" % os.getpid())
     try:
         with open(tmp, "w", encoding="utf-8") as fh:

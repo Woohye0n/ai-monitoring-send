@@ -275,7 +275,11 @@ from sender import node_name
 
 nas, node, mode, explicit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 me = node_name.identity()
+taken = None       # 이 이름을 이미 쓰고 있는 '다른' 장비
 if mode == "local":
+    claim = node_name.claimed_by(nas, node)
+    if claim and not node_name.same_machine(me, claim):
+        taken = claim
     node_name.write_marker(nas, node, me)
     other = node_name.resolve(nas, me, exclude=[node])
 else:
@@ -284,10 +288,21 @@ else:
     except OSError:
         cfg = {}
     if cfg:
+        claim = node_name.resolve_marker_ssh(cfg, node)
+        if claim and not node_name.same_machine(me, claim):
+            taken = claim
         node_name.write_marker_ssh(cfg, node, me)
         other = node_name.resolve_ssh(cfg, me, exclude=[node])
     else:
         other = None
+if taken:
+    # 실수로 남의 노드 이름을 준 경우. gpu-1-0 에서 --host kakao-b200-2 를
+    # 줘서 두 장비가 한 이름으로 보고한 적이 있다. 조용히 넘어가면 대시보드에서
+    # 두 노드의 사용량이 한 덩어리로 섞인다.
+    print(f"  \u26a0 '{node}' 는 이미 다른 장비({taken.get('fqdn')})가 쓰는 이름입니다.")
+    print(f"    이 장비는 {me.get('fqdn')} 입니다. 두 장비가 한 이름으로 보고하면"
+          f" 사용량이 섞입니다.")
+    print(f"    이 장비의 올바른 이름으로 다시 돌리세요:  ./setup.sh --host <이 장비 이름>")
 if other and explicit:
     print(f"  \u26a0 이 장비는 '{other}' 라는 이름으로도 보고되고 있습니다.")
     print(f"    한 장비는 이름 하나여야 합니다. --host 를 빼고 다시 돌리면"

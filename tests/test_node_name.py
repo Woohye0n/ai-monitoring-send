@@ -62,6 +62,22 @@ hits = sorted(((v["marker"], -v["batches"], n) for n, v in split.items()))
 check("배치가 많은 쪽을 고른다(알파벳순 아님)", hits[0][2], "kakao-b200-2")
 
 
+print("[5] 남의 노드 이름을 뺏지 않는가")
+import tempfile, os as _os, json as _json                              # noqa: E402
+from sender.node_name import write_marker, claimed_by                  # noqa: E402
+_nas = tempfile.mkdtemp(prefix="aidas-nas-")
+_os.makedirs(_os.path.join(_nas, "inbox", "n2"))
+_json.dump({"fqdn": "gpu-2-0", "machine_id": None, "node_id": "n2"},
+           open(_os.path.join(_nas, "inbox", "n2", "_identity.json"), "w"))
+check("다른 장비가 쓰는 이름에는 안 쓴다",
+      write_marker(_nas, "n2", {"fqdn": "gpu-1-0", "machine_id": "x"}), False)
+check("원래 마커가 그대로 남는다", claimed_by(_nas, "n2")["fqdn"], "gpu-2-0")
+check("같은 장비면 갱신한다",
+      write_marker(_nas, "n2", {"fqdn": "gpu-2-0", "machine_id": None}), True)
+check("이름이 비어 있으면 그냥 쓴다",
+      write_marker(_nas, "n9", {"fqdn": "gpu-9-0", "machine_id": None}), True)
+
+
 if fails:
     print(f"실패 {len(fails)}건: {', '.join(fails)}")
     sys.exit(1)
