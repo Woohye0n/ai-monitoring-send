@@ -146,13 +146,27 @@ class CodexCollector:
         return None, None
 
     @staticmethod
-    def _state_for(st, account):
+    def _emitted_seq(value):
+        return (value or {}).get("emitted_seq", 0) if isinstance(value, dict) else 0
+
+    @staticmethod
+    def _state_for(st, account, emitted_seq=0, pending_account=False):
         return {
             "size": st.st_size,
             "mtime": st.st_mtime,
-            # Codex rollout parsing is still UUID-idempotent; it has a
-            # different cumulative event format, so no byte cursor is used.
+            # 바이트 오프셋은 쓸 수 없다(누적 이벤트 형식이라 줄 경계와 턴 경계가
+            # 다르다). 대신 파일 안에서 몇 번째 사용량 레코드까지 보냈는지를
+            # 기억한다. seq 는 append-only 파일에서 안정적인 인덱스다.
+            #
+            # 이게 없으면 파일이 커질 때마다 처음부터 다시 파싱해 전부 다시
+            # 보냈다. 실제로 활성 세션 하나가 배치 하나에 105,507행으로 실렸고,
+            # 고유 턴 95,881개를 보내려고 497만 행을 날랐다. 중앙에서 uuid 로
+            # 걸러 수치는 맞았지만, NAS 와 대역폭을 그만큼 태웠다.
             "offset": None,
+            "emitted_seq": emitted_seq,
+            # 계정을 못 읽어 assumed 로만 내보낸 턴이 남아 있다는 표시. 파일이
+            # 더 안 자라도 다음 주기에 한 번 더 읽어 귀속을 시도한다.
+            "pending_account": pending_account,
             "account_email": account.get("email") if account else None,
             "account_id": account.get("account_id") if account else None,
             "inode": getattr(st, "st_ino", None),
@@ -232,7 +246,7 @@ class CodexCollector:
         self._meta_by_path[path] = meta
         return meta
 
-    def _parse_rollout(self, path, email, attributable_after_ms=None):
+    def _parse_rollout(self, path, email, attributable_after_ms=None, since_seq=0):
         """Parse one rollout.
 
         ``attributable_after_ms`` is the cutoff described in ``__init__`` -- the
@@ -296,6 +310,8 @@ class CodexCollector:
                             continue
                         sid = meta.get("id") or _sid_from_name(path)
                         seq += 1
+                        if seq <= since_seq:
+                            continue      # 이미 보낸 턴 — 속도제한 정보는 위에서 이미 반영했다
                         provable = bool(attributable_after_ms and ts
                                         and ts >= attributable_after_ms)
                         usage.append({
@@ -322,7 +338,7 @@ class CodexCollector:
                         })
         except OSError:
             return {}, [], {}
-        return meta, usage, win_latest
+        return meta, usage, win_latest, seq
 
     def collect(self):
         account = self.read_account()
@@ -346,23 +362,42 @@ class CodexCollector:
             except OSError:
                 continue
             mtime_ms = int(st.st_mtime * 1000)
-            prev_size, prev_mtime = self._state_size_mtime(self.file_state.get(path))
+            prev_state = self.file_state.get(path)
+            prev_size, prev_mtime = self._state_size_mtime(prev_state)
             changed = not (prev_size == st.st_size and prev_mtime == st.st_mtime)
+            # 지난번에 계정을 못 읽었다면 파일이 그대로여도 다시 읽는다.
+            if isinstance(prev_state, dict) and prev_state.get("pending_account"):
+                changed = True
+            # 파일이 줄었거나 inode 가 바뀌면 다른 파일이다 — 커서를 버린다.
+            since_seq = self._emitted_seq(prev_state)
+            if prev_size is not None and st.st_size < prev_size:
+                since_seq = 0
+            elif isinstance(prev_state, dict) and prev_state.get("inode") not in (
+                    None, getattr(st, "st_ino", None)):
+                since_seq = 0
             meta, usage = (None, [])
             first_sight = prev_size is None and prev_mtime is None
             skipped_backlog = bool(changed and first_sight and cutoff_ms
                                    and mtime_ms < cutoff_ms)
             if skipped_backlog:
+                # 밀린 파일은 파싱하지 않으므로 어디까지 보냈는지 모른다. 나중에
+                # 이 파일이 바뀌면 그때 한 번 전체를 보낸다(uuid 로 걸러진다).
                 state = self._state_for(st, account)
                 self.file_state[path] = state
                 updated[path] = state
             elif changed:
-                meta, usage, rl_wins = self._parse_rollout(
-                    path, email, attributable_after_ms)
+                meta, usage, rl_wins, last_seq = self._parse_rollout(
+                    path, email, attributable_after_ms, since_seq)
                 self._meta_by_path[path] = meta or {}
                 # ``originator`` is always a string; keep the row consistent.
                 records.extend(usage)
-                state = self._state_for(st, account)
+                # 계정을 못 읽은 주기에 나간 턴은 전부 assumed 라 중앙에서 버려진다.
+                # 커서를 올려 버리면 그 턴들은 영영 다시 안 보내진다 — 예전에
+                # codex 사용량 절반이 사라졌던 것과 같은 실패다. 계정을 확인한
+                # 주기에만 커서를 전진시킨다.
+                known = account_key is not None
+                state = self._state_for(st, account, last_seq if known else since_seq,
+                                        pending_account=not known)
                 self.file_state[path] = state
                 updated[path] = state
                 if rl_wins and account_key is not None:

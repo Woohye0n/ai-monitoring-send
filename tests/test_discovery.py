@@ -390,6 +390,34 @@ try:
     check("직전 폴링보다 오래된 턴도 귀속한다", len(attributed), 1)
     check("토큰이 그대로 실린다",
           sum(u["input_tokens"] + u["output_tokens"] for u in attributed), 150)
+    # 커서가 없으면 파일이 커질 때마다 처음부터 다시 보낸다. 실측으로 활성
+    # 세션 하나가 배치 하나에 105,507행으로 실렸다(고유 턴은 95,881개).
+    check("이미 보낸 턴은 다시 보내지 않는다", len(res["usage"]), 1)
+    _turn(first_poll + 200)
+    _turn(first_poll + 300)
+    res2 = col.collect()
+    check("새로 붙은 턴만 보낸다", len(res2["usage"]), 2)
+    res3 = col.collect()
+    check("바뀐 게 없으면 아무것도 안 보낸다", len(res3["usage"]), 0)
+
+    # 파일이 줄면 다른 파일이다 — 커서를 버리고 처음부터 읽어야 한다.
+    _lines = open(roll, encoding="utf-8").read().splitlines()
+    open(roll, "w", encoding="utf-8").write("\n".join(_lines[:4]) + "\n")
+    res4 = col.collect()
+    check("파일이 줄면 커서를 버린다", len(res4["usage"]) > 0, True)
+
+    # 계정을 못 읽는 주기(auth.json 손상)에 나간 턴은 assumed 라 중앙에서 버려진다.
+    # 그 턴들은 계정이 돌아왔을 때 다시 보내져야 한다.
+    _auth = os.path.join(cdir, "auth.json")
+    _saved = open(_auth, encoding="utf-8").read()
+    open(_auth, "w").write("{}")
+    _turn(first_poll + 400)
+    res5 = col.collect()
+    check("계정을 모르면 assumed 로 나간다",
+          all(u["assumed"] for u in res5["usage"]) and len(res5["usage"]) > 0, True)
+    open(_auth, "w").write(_saved)
+    res6 = col.collect()
+    check("계정이 돌아오면 그 턴을 다시 보낸다", len(res6["usage"]) > 0, True)
 
     # 계정이 실제로 바뀌면 그 이전 턴은 여전히 미확정이어야 한다
     json.dump({"tokens": {"account_id": "acc2",
