@@ -56,4 +56,7 @@ fi
 
 [ -f "$WORK/dist/scripts/bootstrap.sh" ] || { say "받은 배포본이 이상합니다"; exit 1; }
 say "버전: $(cat "$WORK/dist/VERSION" 2>/dev/null || echo '(알 수 없음)')"
-exec bash "$WORK/dist/scripts/bootstrap.sh" "$@"
+# exec 를 쓰면 EXIT 트랩이 돌지 않아 임시 디렉토리가 그대로 남는다. 매번
+# 수십 MB 씩 /tmp 에 쌓이므로 일반 호출로 바꾸고 종료 코드를 넘긴다.
+bash "$WORK/dist/scripts/bootstrap.sh" "$@"
+exit $?

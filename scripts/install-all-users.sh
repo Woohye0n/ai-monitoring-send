@@ -268,6 +268,75 @@ done < /etc/passwd
 
 printf '%s\n' "------------------------------------------------------------"
 echo "완료: OK $ok · 건너뜀 $skip · 실패 $fail"
+
+# 어느 설치본에도 속하지 않는 송신기를 정리한다.
+#
+# stop.sh 는 자기 계정 것만 본다(pgrep -u). 그래서 남의 계정으로 떠 있거나
+# 설치 디렉토리가 이미 지워진 프로세스는 업그레이드를 몇 번 돌려도 살아남는다.
+# 실제로 gpu-2-0 에서 설치본은 하나인데 송신기가 3개였고, 그중 하나는 root
+# 소유로 사라진 옛 이름을 계속 보고했다. root 로 도는 지금이 전체를 볼 수
+# 있는 유일한 지점이다.
+#
+# 판별은 argv 로 한다. pgrep -f 는 커맨드라인 문자열을 훑어서 'sender.main'
+# 이라는 말이 들어간 셸까지 잡는다.
+if [ "$DRY" != "1" ] && [ "$(id -u)" = "0" ]; then
+  # 정리는 '아는 pid 목록'의 여집합이다. 목록이 불완전하면 멀쩡한 송신기를
+  # 죽인다 — 실제로 일반 계정으로 돌려보니 19개 중 16개를 정리 대상으로
+  # 잡았다(남의 홈을 못 읽어 pid 파일이 없는 것처럼 보였다). 그래서 설치본이
+  # 있는데 pid 파일을 읽지 못한 사용자가 하나라도 있으면 정리를 건너뛴다.
+  KNOWN=" "; BLIND=0
+  while IFS=: read -r u _ _ _ _ h _; do
+    d="$h/$DEST_NAME"
+    [ -d "$d" ] || continue
+    pf="$d/data/sender.pid"
+    if [ -r "$pf" ]; then
+      KNOWN="$KNOWN$(cat "$pf" 2>/dev/null) "
+    elif [ -e "$pf" ]; then
+      BLIND=$((BLIND+1))
+    fi
+  done < /etc/passwd
+  if [ "$BLIND" -gt 0 ]; then
+    echo
+    echo "⚠ pid 파일 $BLIND 개를 읽지 못해 송신기 정리를 건너뜁니다"
+    KNOWN=""
+  fi
+fi
+if [ -n "${KNOWN:-}" ]; then
+
+  STRAY=""; TOTAL_SENDERS=0
+  for p in $(pgrep -f 'sender\.main' 2>/dev/null); do
+    a0=""; a1=""; a2=""
+    { IFS= read -r -d '' a0 && IFS= read -r -d '' a1 && IFS= read -r -d '' a2; } \
+      < "/proc/$p/cmdline" 2>/dev/null || continue
+    case "${a0##*/}" in python*) ;; *) continue;; esac
+    [ "$a1" = "-m" ] && [ "$a2" = "sender.main" ] || continue
+    TOTAL_SENDERS=$((TOTAL_SENDERS+1))
+    case "$KNOWN" in *" $p "*) continue;; esac
+    STRAY="$STRAY $p"
+  done
+
+  n_stray=$(printf '%s' "$STRAY" | wc -w)
+  if [ "$n_stray" -gt 0 ] && [ "$n_stray" -ge "$TOTAL_SENDERS" ]; then
+    # 전부가 '모르는 것'이면 아는 쪽이 틀린 것이다. 죽이지 말고 알린다.
+    echo
+    echo "⚠ 송신기 $TOTAL_SENDERS 개가 전부 추적 밖으로 보입니다 — 정리하지 않습니다"
+    echo "  (pid 파일이 비정상일 수 있습니다: */data/sender.pid 확인)"
+    STRAY=""
+  fi
+  if [ -n "$STRAY" ]; then
+    echo
+    echo "어느 설치본에도 속하지 않는 송신기를 정리합니다:$STRAY"
+    for p in $STRAY; do
+      printf '  pid %-8s %s\n' "$p" "$(ps -o user= -p "$p" 2>/dev/null)"
+    done
+    # shellcheck disable=SC2086
+    kill $STRAY 2>/dev/null || true
+    sleep 1
+    for p in $STRAY; do
+      kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true
+    done
+  fi
+fi
 [ "$DRY" = "1" ] && echo "(--dry-run 이었습니다. 실제로 설치하려면 빼고 다시 실행하세요)"
 echo
 echo "확인:  python3 $SRC/scripts/fleet-status.py --nas /mnt/nas/yunseok/ai-monitoring"
