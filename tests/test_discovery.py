@@ -431,6 +431,26 @@ try:
 finally:
     shutil.rmtree(_tmp, ignore_errors=True)
 
+print("\n[8] 디렉토리를 왜 거부했는지 구분하는가")
+_rj = tempfile.mkdtemp(prefix="aidas-reject-")
+check("흔적이 없으면 그렇게 말한다",
+      "흔적이 없음" in (discovery.reject_reason("claude", _rj) or ""), True)
+os.makedirs(os.path.join(_rj, "projects"))
+check("마커가 있으면 인정한다", discovery.reject_reason("claude", _rj), None)
+check("looks_like 는 그대로 동작한다", discovery.looks_like("claude", _rj), True)
+check("없는 경로", discovery.reject_reason("claude", "/nope/.claude"), "디렉토리가 없음")
+_locked = tempfile.mkdtemp(prefix="aidas-locked-")
+os.chmod(_locked, 0o000)
+try:
+    if os.getuid() != 0:          # root 는 권한에 막히지 않는다
+        check("권한 문제는 '흔적 없음'과 구분한다",
+              discovery.reject_reason("claude", _locked), "읽기 권한 없음")
+finally:
+    os.chmod(_locked, 0o755)
+    shutil.rmtree(_locked, ignore_errors=True)
+    shutil.rmtree(_rj, ignore_errors=True)
+
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

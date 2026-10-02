@@ -298,14 +298,37 @@ def _sessions_shape(path):
     return None
 
 
-def looks_like(provider, path):
-    if not path or not os.path.isdir(path):
-        return False
+def reject_reason(provider, path):
+    """왜 이 경로를 설정 디렉토리로 인정하지 않는지. 인정하면 None.
+
+    권한이 없어 안을 못 보는 경우와 그냥 다른 디렉토리인 경우는 증상이 같다 —
+    마커 파일이 하나도 '존재하지 않는 것처럼' 보인다. 실제로 kakao-b200-3 에서
+    claude 프로세스 10개가 /home/jovyan/.claude 에 쓰는데 수집은 0건이었고,
+    경고는 "수집 대상이 아닙니다" 라고만 해서 원인을 알 수 없었다. 같은 사용자가
+    같은 경로를 쓰는 다른 세 노드는 멀쩡했으니 디렉토리 모양 문제가 아니었다.
+    """
+    if not path:
+        return "경로 없음"
     if path.endswith(_NOT_A_DIR_SUFFIX):
-        return False
+        return "설정 디렉토리가 아닌 파일"
+    if not os.path.isdir(path):
+        return "디렉토리가 없음"
+    # 안을 들여다볼 수 있는지 먼저 확인한다. 못 보면 마커 판정은 의미가 없다.
+    try:
+        os.listdir(path)
+    except PermissionError:
+        return "읽기 권한 없음"
+    except OSError as e:
+        return f"읽을 수 없음({e.errno})"
     if any(os.path.exists(os.path.join(path, m)) for m in _MARKERS[provider]):
-        return True
-    return _sessions_shape(path) == provider
+        return None
+    if _sessions_shape(path) == provider:
+        return None
+    return f"{provider} 설정 디렉토리의 흔적이 없음"
+
+
+def looks_like(provider, path):
+    return reject_reason(provider, path) is None
 
 
 def _glob_dirs(provider, roots):
@@ -397,9 +420,10 @@ def discover(cfg, home=None):
     uncollected = [p for p in processes
                    if p["config_dir"] and p["config_dir"] not in collected]
     for proc in uncollected:
+        why = reject_reason(proc["provider"], proc["config_dir"]) or "원인 불명"
         warnings.append(
             f"pid {proc['pid']} ({proc['provider']}) 가 {proc['config_dir']} 에 쓰는데 "
-            "수집 대상이 아닙니다")
+            f"수집하지 못합니다 — {why}")
 
     return {"dirs": result, "processes": processes,
             "uncollected": uncollected, "warnings": warnings}
