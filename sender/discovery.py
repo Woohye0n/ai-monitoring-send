@@ -364,6 +364,16 @@ def discover(cfg, home=None):
 
     processes, hinted = iter_processes() if discover_on else ([], set())
     warnings = []
+
+    # 걷을 디렉토리를 적어 두고 수집은 꺼 둔 설정. 둘 중 하나는 실수다.
+    # kakao-b200-3 이 정확히 이 상태로 몇 주를 돌았고, claude 사용량이 통째로
+    # 빠지는 동안 아무것도 그것을 말해 주지 않았다.
+    for provider in PROVIDERS:
+        if not enabled[provider] and configured[provider]:
+            warnings.append(
+                f"config.json: {provider} 수집이 꺼져 있는데 "
+                f"config_dirs 에 {len(configured[provider])}개가 적혀 있습니다 "
+                f"({', '.join(configured[provider][:3])}) — 둘 중 하나는 의도가 아닐 수 있습니다")
     result = {CLAUDE: [], CODEX: []}
 
     for provider in PROVIDERS:

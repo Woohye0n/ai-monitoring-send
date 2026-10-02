@@ -478,6 +478,18 @@ if os.path.isdir(_real):      # 이 서버에서 실제로 도는 세션이 있�
           "꺼져 있음" in _warn({"claude": {"enabled": False}}, _real), True)
 
 
+print("\n[11] 모순된 설정을 알리는가")
+def _cfgwarn(cfg):
+    return [w for w in discovery.discover(dict(cfg, discover=False))["warnings"]
+            if "config.json:" in w]
+check("끄고서 디렉토리를 적어 두면 경고한다",
+      len(_cfgwarn({"claude": {"enabled": False, "config_dirs": ["~/.claude-lab1"]}})), 1)
+check("켜 두면 경고하지 않는다",
+      _cfgwarn({"claude": {"enabled": True, "config_dirs": ["~/.claude-lab1"]}}), [])
+check("꺼도 적은 게 없으면 경고하지 않는다",
+      _cfgwarn({"claude": {"enabled": False, "config_dirs": []}}), [])
+
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
