@@ -411,8 +411,12 @@ def discover(cfg, home=None):
 
         if not result[provider] and enabled[provider]:
             fallback = os.path.join(home, _DEFAULT_BASENAME[provider])
-            result[provider] = [{"path": fallback, "source": "default",
-                                 "display": fallback.replace(home, "~", 1)}]
+            # 폴백이 exclude_dirs 를 무시하면 안 된다. 제외한 경로가 그 provider 의
+            # 유일한 후보일 때 기본값으로 도로 들어와, 설정이 아무 일도 하지 않은
+            # 것처럼 보였다 — 끄려고 적은 사람 입장에서는 조용한 배신이다.
+            if os.path.realpath(fallback) not in excluded:
+                result[provider] = [{"path": fallback, "source": "default",
+                                     "display": fallback.replace(home, "~", 1)}]
 
     # A live process writing somewhere nobody collects is the exact failure this
     # module exists to surface.  It must be reported, not just fixed silently.
@@ -420,10 +424,18 @@ def discover(cfg, home=None):
     uncollected = [p for p in processes
                    if p["config_dir"] and p["config_dir"] not in collected]
     for proc in uncollected:
-        why = reject_reason(proc["provider"], proc["config_dir"]) or "원인 불명"
+        prov, path = proc["provider"], proc["config_dir"]
+        # 설정으로 꺼 둔 것과 고장난 것은 전혀 다른 일인데, 예전에는 똑같이
+        # "수집 대상이 아닙니다" 로만 보였다. kakao-b200-3 의 claude 사용량이
+        # 통째로 빠지는데도 디렉토리는 멀쩡해서 원인을 좁힐 수 없었다.
+        if not enabled[prov]:
+            why = f"config.json 에서 {prov} 수집이 꺼져 있음 (\"{prov}\": {{\"enabled\": false}})"
+        elif os.path.realpath(path) in excluded:
+            why = "config.json 의 exclude_dirs 에 들어 있음"
+        else:
+            why = reject_reason(prov, path) or "원인 불명"
         warnings.append(
-            f"pid {proc['pid']} ({proc['provider']}) 가 {proc['config_dir']} 에 쓰는데 "
-            f"수집하지 못합니다 — {why}")
+            f"pid {proc['pid']} ({prov}) 가 {path} 에 쓰는데 수집하지 못합니다 — {why}")
 
     return {"dirs": result, "processes": processes,
             "uncollected": uncollected, "warnings": warnings}

@@ -451,6 +451,33 @@ finally:
     shutil.rmtree(_rj, ignore_errors=True)
 
 
+print("\n[9] 수집되지 않는 이유를 설정까지 포함해 말하는가")
+_h = tempfile.mkdtemp(prefix="aidas-cfg-")
+_cd = os.path.join(_h, ".claude"); os.makedirs(os.path.join(_cd, "projects"))
+
+def _warn(cfg, path=_cd):
+    r = discovery.discover(cfg, home=_h)
+    return " ".join(w for w in r["warnings"] if path in w)
+
+def _dirs(cfg):
+    # discover=False: 이 서버에서 실제로 도는 세션을 주워 오면 격리가 깨진다.
+    cfg = dict(cfg, discover=False)
+    return [d["path"] for d in discovery.discover(cfg, home=_h)["dirs"]["claude"]]
+
+check("아무 설정이 없으면 수집한다", _dirs({}), [_cd])
+check("exclude_dirs 가 실제로 먹는다", _dirs({"exclude_dirs": [_cd]}), [])
+check("enabled=false 면 수집하지 않는다", _dirs({"claude": {"enabled": False}}), [])
+shutil.rmtree(_h, ignore_errors=True)
+
+print("\n[10] 경고가 설정 때문인지 고장 때문인지 구분하는가")
+_real = os.path.join(os.path.expanduser("~"), ".claude")
+if os.path.isdir(_real):      # 이 서버에서 실제로 도는 세션이 있을 때만
+    check("exclude_dirs 를 사유로 든다",
+          "exclude_dirs" in _warn({"exclude_dirs": [_real]}, _real), True)
+    check("enabled=false 를 사유로 든다",
+          "꺼져 있음" in _warn({"claude": {"enabled": False}}, _real), True)
+
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
