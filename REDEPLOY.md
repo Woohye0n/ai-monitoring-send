@@ -120,6 +120,70 @@ app-server 실행에 쓰이지 않고(검증함), 확장은 자기 번들 바이
 > 조용히 새기 시작합니다. `check-routing.py` 가 탐지하고, `setup-accounts.py`
 > 재실행으로 복구됩니다.
 
+## 이번 변경 (2026-10-07) — 같은 턴 두 번 세기, 단가를 가르는 값
+
+**증상.** 대시보드의 토큰 수가 실제보다 크게 나오고, 같은 토큰 수라도 실제 값(공식 API
+단가)이 크게 다른 사용이 한데 섞여 있었습니다.
+
+| # | 무엇이 | 실제 증거 |
+|---|---|---|
+| 1 | **codex 턴 키가 읽은 위치를 따라 움직임** — `codex:{sid}:{ts}:{seq}` | resume 하면 이전 턴이 재개 시각으로 다시 적힌다. 한 세션의 같은 턴이 최대 168번, 실제 69,275턴이 1,396,827행(20배). 커서(9/23) 이후에도 한 노드가 1.95배 |
+| 2 | **Claude 캐시 쓰기 TTL 을 버림** | 5분 쓰기 ×1.25, 1시간 쓰기 ×2 (입력가 대비). 실측 97~100% 가 1시간인데 합계 칸 하나로만 보냄 |
+| 3 | **fast / 처리 티어를 버림** | Claude `usage.speed`, Codex `thread_settings_applied.service_tier`. Codex priority(=Fast, 2배)로 9,430턴이 돌았는데 표준가로 잡힘 |
+| 4 | **Codex `service_tier` 칸에 요금제를 실음** | `plan_type="pro"` 가 들어가, Claude 쪽(처리 티어)과 같은 이름에 다른 뜻 |
+| 5 | **effort 를 버림** | 단가는 같지만(생성량만 바꿈) 누가 어떤 강도로 쓰는지 볼 근거가 없음 |
+| 6 | **Codex 캐시 쓰기를 0 으로 박음** | 지금까지는 늘 0 이라 손실 없음. 값이 생기는 순간 조용히 사라지는 구조 |
+
+**바꾼 것.**
+
+| 파일 | 내용 |
+|---|---|
+| `sender/codex_collector.py` | 턴 키를 내용 기반으로(`usage_uuid` — ts 를 일부러 뺌). `service_tier`(실제 티어)·`speed`·`effort`·`plan` 분리, `cache_write_input_tokens` 반영 |
+| `sender/claude_collector.py` | `cache_creation_5m_tokens`/`cache_creation_1h_tokens`, `speed`, `effort` 추가 |
+| `tests/test_codex_uuid.py`, `tests/test_price_fields.py` (신규) | 실제 관측한 모양 그대로 재현 |
+
+**배치 모양만 늘어납니다 — 받는 쪽이 구버전이어도 깨지지 않습니다.** 모르는 키는 무시되고
+(`gpu-grants-dashboard` 의 `ai_store.py`, 중앙 `aidas-ai-monitoring` 둘 다), 키가 바뀐 codex
+턴은 수집 쪽이 같은 식으로 다시 계산하므로 섞여 들어와도 두 번 세지 않습니다.
+
+**설정 변경은 필요 없습니다.**
+
+### 재배포 후 확인
+
+```bash
+cd ~/ai-monitoring-send && git pull && ./stop.sh && ./start.sh && ./status.sh
+python3 tests/test_codex_uuid.py && python3 tests/test_price_fields.py
+```
+
+NAS 로 받는 노드(카카오 b200 등)는 배포본을 먼저 갱신한 뒤 각 노드에서 받습니다.
+
+```bash
+./scripts/publish-dist.sh                                   # 편집용 체크아웃에서 (1회)
+sudo bash /home/<사용자>/ai-monitoring-send/scripts/update-from-nas.sh    # 각 노드에서
+```
+
+몇 분 뒤 그 노드의 최신 배치 usage 레코드에 `speed`·`effort` 가, Claude 레코드에
+`cache_creation_1h_tokens` 가 보이면 반영된 것입니다. 전송이 끝난 배치는 outbox 에서
+지워지므로, NAS inbox 가 마운트된 서버(집계 서버)에서 봅니다.
+
+```bash
+python3 - <노드이름> <<'EOF'
+import gzip, glob, json, os, sys
+d = f"/mnt/nas/yunseok/ai-monitoring/inbox/{sys.argv[1]}"
+for f in sorted(glob.glob(d + "/batch-*.json.gz"), key=os.path.getmtime, reverse=True):
+    us = json.load(gzip.open(f)).get("usage") or []
+    if us:                      # 쉬는 노드는 빈 배치를 보낸다 — 턴이 있는 최신 배치를 본다
+        break
+print(os.path.basename(f), len(us), "turns")
+for u in us[:3]:
+    print({k: u.get(k) for k in ("provider", "model", "speed", "effort", "cache_creation_1h_tokens")})
+EOF
+```
+
+세 값이 모두 `None` 이면 그 노드는 아직 구버전입니다(2026-10-07 기준 전 노드가 이 상태).
+
+---
+
 ## 이번 변경 (2026-09-21) — 수집 범위와 표면
 
 **증상.** 사람들이 분명히 쓰는데 대시보드에 안 잡히고, 잡혀도 누가 어떻게 썼는지

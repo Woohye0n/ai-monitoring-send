@@ -303,6 +303,16 @@ class ClaudeCollector:
                         self._entrypoint_by_session[session_id] = entrypoint
                     elif session_id:
                         entrypoint = self._entrypoint_by_session.get(session_id)
+                    # 단가를 가르는 값들. 토큰 수가 같아도 이것에 따라 값이 다르다
+                    # (공식 API 단가표 기준):
+                    #   cache_creation 의 TTL — 5분 쓰기는 입력가의 1.25배, 1시간 쓰기는
+                    #       2배. 합계 칸 하나로는 둘을 구분할 수 없는데, 실측으로
+                    #       Claude Code 의 쓰기는 97~100% 가 1시간짜리였다.
+                    #   speed — "fast" 면 Opus 5.5/5/4.8 단가가 2배.
+                    # effort 는 단가를 바꾸지 않지만(생성량만 바꾼다) 같은 줄에 있고,
+                    # 누가 어떤 강도로 쓰는지 볼 때 필요해서 같이 싣는다.
+                    ttl = usage.get("cache_creation")
+                    ttl = ttl if isinstance(ttl, dict) else {}
                     out.append({
                         "uuid": uuid,
                         "provider": "claude",
@@ -316,6 +326,12 @@ class ClaudeCollector:
                         "output_tokens": usage.get("output_tokens", 0) or 0,
                         "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0) or 0,
                         "cache_read_tokens": usage.get("cache_read_input_tokens", 0) or 0,
+                        # 없으면 None 으로 둔다 — 0 은 "5분/1시간 쓰기가 없었다" 는
+                        # 다른 뜻이고, 중앙이 TTL 미상인 쓰기를 구분해 다뤄야 한다.
+                        "cache_creation_5m_tokens": ttl.get("ephemeral_5m_input_tokens"),
+                        "cache_creation_1h_tokens": ttl.get("ephemeral_1h_input_tokens"),
+                        "speed": usage.get("speed"),
+                        "effort": d.get("effort"),
                         "service_tier": usage.get("service_tier"),
                         "request_id": d.get("requestId"),
                         "version": d.get("version"),
