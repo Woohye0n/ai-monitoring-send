@@ -14,10 +14,17 @@ On-disk format (Codex CLI):
 
 Token mapping to the shared 4-component schema (so totals stay consistent):
   cache_read     = cached_input_tokens
-  input          = input_tokens - cached_input_tokens   (uncached portion)
-  output         = output_tokens                         (reasoning is a subset)
-  cache_creation = 0
-  -> total = input + output + cache_read == codex total_tokens
+  cache_creation = cache_write_input_tokens
+  input          = input_tokens - cached - cache_write     (uncached portion)
+  output         = output_tokens                           (reasoning is a subset,
+                                                            billed at the output rate)
+  -> total = input + output + cache_read + cache_creation == codex total_tokens
+
+Per-turn price modifiers carried alongside (they change $/token, not counts):
+  service_tier = thread_settings_applied.thread_settings.service_tier (state)
+  speed        = speed_of_tier(service_tier)   standard | fast | flex | <raw>
+  effort       = turn_context.effort           (does not change $/token)
+  plan         = rate_limits.plan_type         (was mislabeled service_tier)
 
 We record per-turn deltas (last_token_usage) with the event timestamp so the
 charts work; summed they equal the session's cumulative total.
@@ -25,6 +32,7 @@ charts work; summed they equal the session's cumulative total.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -78,6 +86,54 @@ def iso_to_ms(ts):
         return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
     except (ValueError, TypeError):
         return None
+
+
+
+
+def speed_of_tier(tier):
+    """Codex 의 처리 티어를 Claude 의 ``usage.speed`` 와 같은 말로 옮긴다.
+
+    두 도구가 같은 개념(같은 모델을 다른 단가로 돌리는 것)을 다른 이름으로 적는다.
+    중앙이 한 컬럼으로 단가를 매기려면 이름을 맞춰야 한다.
+
+      default / auto / None  -> standard   (표준 단가)
+      priority / fast        -> fast       (OpenAI Fast — 표준가의 2배)
+      flex                   -> flex       (OpenAI Flex — 표준가의 0.5배)
+
+    모르는 값은 그대로 둔다 — 중앙이 그 행을 "단가 미등록" 으로 드러낼 수 있게.
+    표준으로 뭉개면 새 티어가 생겼을 때 아무도 모른 채 틀린 값이 나간다.
+    """
+    if tier in (None, "", "default", "auto", "standard"):
+        return "standard"
+    if tier in ("priority", "fast"):
+        return "fast"
+    return tier
+
+def usage_uuid(session_id, model, input_tokens, output_tokens, cache_read_tokens):
+    """턴의 정체성을 그 턴의 내용으로 정한다.
+
+    예전 키는 ``codex:{sid}:{ts}:{seq}`` 였다. 둘 다 파일을 어디서부터 읽었는지에
+    딸려 움직이는 값이다.
+
+      - ``ts``: 세션을 resume 하면 Codex 가 이전 턴들을 재개 시각으로 다시 적는다.
+        같은 턴이 여러 ts 로 나타나고, 중앙은 그걸 서로 다른 턴으로 받는다.
+      - ``seq``: 파일 안 몇 번째냐이므로, 앞부분이 다시 쓰이면 번호가 밀린다.
+
+    중앙(aidas-ai-monitoring)에서 실제로 관측한 결과: 세션 019f7e79 하나가 같은
+    (input, output, cache_read) 조합을 08-10..08-31 사이 최대 168번 들고 있었고,
+    실제 턴 69,275개가 1,396,827행으로 20배 불었다. 주간 합계에 허수 cache_read
+    약 76B 이 섞여, 한 사람의 7일 사용량이 3.1B 대신 58.4B 로 보였다.
+
+    턴의 토큰 지문으로 키를 잡으면 재개분이 이미 있는 행에 그대로 겹친다. 중앙이
+    ``INSERT OR IGNORE`` 를 쓰므로 먼저 들어온 행 — 즉 그 턴의 **원래 시각** — 이
+    남는다.
+
+    한 세션 안에서 토큰 수가 완전히 같은 서로 다른 턴은 하나로 합쳐진다.
+    cache_read 가 10^5 단위라 그 충돌은 20배 뻥튀기보다 훨씬 드물다.
+    """
+    key = "|".join(str(x) for x in (
+        session_id, model, input_tokens, output_tokens, cache_read_tokens))
+    return "codex:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
 def _basename(cwd):
@@ -257,6 +313,11 @@ class CodexCollector:
         """
         meta = {}
         model = None
+        # 턴마다가 아니라 "설정이 바뀔 때" 적히는 값이라 상태로 들고 간다. 파일은
+        # 매 주기 처음부터 다시 읽으므로(emitted_seq 는 내보내기만 건너뛴다)
+        # 이미 보낸 턴을 건너뛰는 중에도 상태는 정확히 따라온다.
+        effort = None
+        tier = None
         source = None
         surface = discovery.UNKNOWN
         usage = []
@@ -290,6 +351,12 @@ class CodexCollector:
                             p.get("originator"), source)
                     elif t == "turn_context":
                         model = p.get("model") or model
+                        effort = p.get("effort") or effort
+                    elif t == "event_msg" and p.get("type") == "thread_settings_applied":
+                        # 처리 티어. "priority" 가 OpenAI 단가표의 Fast(표준가의 2배)다 —
+                        # "Priority processing was renamed Fast mode on July 30, 2026".
+                        # 턴의 usage 에는 안 실리고 여기에만 있다.
+                        tier = (p.get("thread_settings") or {}).get("service_tier") or tier
                     elif t == "event_msg" and p.get("type") == "token_count":
                         ts = iso_to_ms(d.get("timestamp"))
                         rl = p.get("rate_limits")        # real 5h/weekly % live here
@@ -304,6 +371,11 @@ class CodexCollector:
                             continue
                         lu = info.get("last_token_usage") or {}
                         cached = lu.get("cached_input_tokens", 0) or 0
+                        # 캐시 쓰기는 OpenAI 단가표상 입력가의 1.25배로 따로 매겨진다.
+                        # 예전에는 0 으로 박아 두었다. 지금까지 관측된 29만 턴에서는 전부
+                        # 0 이라 잃은 것은 없지만, 값이 생기는 순간 조용히 사라진다.
+                        # cached 와 마찬가지로 input_tokens 의 일부로 본다.
+                        written = lu.get("cache_write_input_tokens", 0) or 0
                         inp = lu.get("input_tokens", 0) or 0
                         out = lu.get("output_tokens", 0) or 0
                         if (inp + out) == 0:
@@ -314,8 +386,9 @@ class CodexCollector:
                             continue      # 이미 보낸 턴 — 속도제한 정보는 위에서 이미 반영했다
                         provable = bool(attributable_after_ms and ts
                                         and ts >= attributable_after_ms)
+                        inp_uncached = max(0, inp - cached - written)
                         usage.append({
-                            "uuid": f"codex:{sid}:{ts}:{seq}",
+                            "uuid": usage_uuid(sid, model, inp_uncached, out, cached),
                             "provider": "codex",
                             "session_id": sid,
                             "project": _basename(meta.get("cwd")),
@@ -323,11 +396,17 @@ class CodexCollector:
                             "git_branch": None,
                             "model": model,
                             "ts": ts,
-                            "input_tokens": max(0, inp - cached),
+                            "input_tokens": inp_uncached,
                             "output_tokens": out,
-                            "cache_creation_tokens": 0,
+                            "cache_creation_tokens": written,
                             "cache_read_tokens": cached,
-                            "service_tier": plan,
+                            # 예전에는 이 칸에 요금제(plan_type="pro")를 실었다. 같은 이름의
+                            # Claude 쪽 칸은 처리 티어라 한 컬럼에 두 뜻이 섞였다.
+                            # 요금제는 plan 으로 옮기고 이 칸은 실제 처리 티어만 담는다.
+                            "service_tier": tier,
+                            "speed": speed_of_tier(tier),
+                            "effort": effort,
+                            "plan": plan,
                             "request_id": None,
                             "version": meta.get("cli_version"),
                             "entrypoint": meta.get("originator"),
