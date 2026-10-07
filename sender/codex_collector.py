@@ -25,6 +25,7 @@ charts work; summed they equal the session's cumulative total.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -78,6 +79,34 @@ def iso_to_ms(ts):
         return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
     except (ValueError, TypeError):
         return None
+
+
+
+def usage_uuid(session_id, model, input_tokens, output_tokens, cache_read_tokens):
+    """턴의 정체성을 그 턴의 내용으로 정한다.
+
+    예전 키는 ``codex:{sid}:{ts}:{seq}`` 였다. 둘 다 파일을 어디서부터 읽었는지에
+    딸려 움직이는 값이다.
+
+      - ``ts``: 세션을 resume 하면 Codex 가 이전 턴들을 재개 시각으로 다시 적는다.
+        같은 턴이 여러 ts 로 나타나고, 중앙은 그걸 서로 다른 턴으로 받는다.
+      - ``seq``: 파일 안 몇 번째냐이므로, 앞부분이 다시 쓰이면 번호가 밀린다.
+
+    중앙(aidas-ai-monitoring)에서 실제로 관측한 결과: 세션 019f7e79 하나가 같은
+    (input, output, cache_read) 조합을 08-10..08-31 사이 최대 168번 들고 있었고,
+    실제 턴 69,275개가 1,396,827행으로 20배 불었다. 주간 합계에 허수 cache_read
+    약 76B 이 섞여, 한 사람의 7일 사용량이 3.1B 대신 58.4B 로 보였다.
+
+    턴의 토큰 지문으로 키를 잡으면 재개분이 이미 있는 행에 그대로 겹친다. 중앙이
+    ``INSERT OR IGNORE`` 를 쓰므로 먼저 들어온 행 — 즉 그 턴의 **원래 시각** — 이
+    남는다.
+
+    한 세션 안에서 토큰 수가 완전히 같은 서로 다른 턴은 하나로 합쳐진다.
+    cache_read 가 10^5 단위라 그 충돌은 20배 뻥튀기보다 훨씬 드물다.
+    """
+    key = "|".join(str(x) for x in (
+        session_id, model, input_tokens, output_tokens, cache_read_tokens))
+    return "codex:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
 def _basename(cwd):
@@ -314,8 +343,9 @@ class CodexCollector:
                             continue      # 이미 보낸 턴 — 속도제한 정보는 위에서 이미 반영했다
                         provable = bool(attributable_after_ms and ts
                                         and ts >= attributable_after_ms)
+                        inp_uncached = max(0, inp - cached)
                         usage.append({
-                            "uuid": f"codex:{sid}:{ts}:{seq}",
+                            "uuid": usage_uuid(sid, model, inp_uncached, out, cached),
                             "provider": "codex",
                             "session_id": sid,
                             "project": _basename(meta.get("cwd")),
@@ -323,7 +353,7 @@ class CodexCollector:
                             "git_branch": None,
                             "model": model,
                             "ts": ts,
-                            "input_tokens": max(0, inp - cached),
+                            "input_tokens": inp_uncached,
                             "output_tokens": out,
                             "cache_creation_tokens": 0,
                             "cache_read_tokens": cached,
