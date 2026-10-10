@@ -500,8 +500,13 @@ class ClaudeCollector:
             usage = self._maybe_fetch_usage(account)
             if usage:
                 if usage.get("rate_limits"):
-                    account["rate_limits"] = usage["rate_limits"]
+                    rl = dict(usage["rate_limits"])
+                    credits = rl.pop("_credits", None)
+                    account["rate_limits"] = rl
                     account["rate_limits_updated_at"] = usage.get("fetched_at_ms")
+                    if credits is not None:
+                        account["credits"] = dict(credits, source="claude_oauth",
+                                                  observed_at=usage.get("fetched_at_ms"))
                 if usage.get("status"):
                     account["usage_status"] = usage["status"]
                     account["usage_status_at"] = usage.get("status_at")

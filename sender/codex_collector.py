@@ -47,6 +47,35 @@ except ImportError:  # pragma: no cover - allow running as a loose script
 RECENT_SESSION_MS = 24 * 3600 * 1000  # re-report a session row if active within this
 
 
+# Internal slot for the credit balance inside the per-window cache. It rides the
+# same "newest event wins" path as the 5h/weekly windows, then leaves
+# ``rate_limits`` and goes out as ``account["credits"]``.
+CREDITS_SLOT = "_credits"
+
+
+def _norm_codex_credits(rl):
+    """Codex's paid credit balance from ``rate_limits.credits``.
+
+    Once an account reaches 100% of its weekly limit Codex keeps going on these
+    credits (observed 2026-10-06: ~13,000 spent in 16 hours), so the balance is
+    worth showing next to the limit gauges. ``balance`` is a decimal string;
+    events that say ``has_credits`` without a balance carry no information and
+    are skipped so they cannot hide a known balance.
+    """
+    cr = rl.get("credits") if isinstance(rl, dict) else None
+    if not isinstance(cr, dict):
+        return None
+    try:
+        balance = float(cr["balance"]) if cr.get("balance") not in (None, "") else None
+    except (TypeError, ValueError):
+        balance = None
+    if balance is None and cr.get("has_credits"):
+        return None
+    return {"balance": balance if balance is not None else 0.0,
+            "has_credits": bool(cr.get("has_credits")),
+            "unlimited": bool(cr.get("unlimited"))}
+
+
 def _norm_codex_rate_limits(rl, event_ts_ms=None):
     """Map codex rate_limits {primary(300m), secondary(10080m)} to the shared
     {five_hour, seven_day} shape with ISO reset times (the real 5h/weekly %).
@@ -362,6 +391,9 @@ class CodexCollector:
                         rl = p.get("rate_limits")        # real 5h/weekly % live here
                         plan = rl.get("plan_type") if isinstance(rl, dict) else None
                         norm = _norm_codex_rate_limits(rl, ts)
+                        credits = _norm_codex_credits(rl)
+                        if credits is not None:
+                            norm = dict(norm or {}, **{CREDITS_SLOT: credits})
                         for k, v in (norm or {}).items():
                             prev = win_latest.get(k)
                             if prev is None or (ts or 0) >= prev[0]:
@@ -510,12 +542,16 @@ class CodexCollector:
             rl_out = {"source": "codex_rollout"}
             newest = 0
             for k, (ts_w, v) in cached.items():
+                if k == CREDITS_SLOT:
+                    account["credits"] = dict(v, source="codex_rollout", observed_at=ts_w)
+                    continue
                 rl_out[k] = v
                 newest = max(newest, ts_w)
-            account["rate_limits"] = rl_out
-            # The timestamp comes from the rollout event, not from every
-            # collector pass that happens to reuse the cache.
-            account["rate_limits_updated_at"] = newest or now_ms
+            if len(rl_out) > 1:
+                account["rate_limits"] = rl_out
+                # The timestamp comes from the rollout event, not from every
+                # collector pass that happens to reuse the cache.
+                account["rate_limits_updated_at"] = newest or now_ms
         self._last_account_identity = account_key
         self._last_poll_ms = now_ms
         return {
