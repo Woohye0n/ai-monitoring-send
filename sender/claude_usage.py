@@ -103,6 +103,21 @@ def normalize_usage(data):
     return out if len(out) > 1 else None
 
 
+def normalize_credits(data):
+    """Extra-usage (paid credits) state from a /api/oauth/usage body.
+
+    The body carries no balance — only whether extra usage is on, why it is
+    off (e.g. "out_of_credits"), what was spent and the monthly cap. Returned
+    as the account's ``credits`` field, separate from the window dict.
+    """
+    eu = (data or {}).get("extra_usage")
+    if not isinstance(eu, dict):
+        return None
+    keep = ("is_enabled", "disabled_reason", "used_credits", "monthly_limit",
+            "utilization", "currency", "spend_limit_reached", "credits_ever_enabled")
+    return {k: eu.get(k) for k in keep}
+
+
 def fetch_usage(access_token, version=DEFAULT_VERSION, timeout=20):
     """Return ``(rate_limits, error)`` for this token.
 
@@ -139,4 +154,9 @@ def fetch_usage(access_token, version=DEFAULT_VERSION, timeout=20):
     out = normalize_usage(data)
     if out is None:
         return None, "empty"
+    credits = normalize_credits(data)
+    if credits is not None:
+        # Rides along in the window dict and is split off by the collector, so
+        # fetch_usage keeps its (rate_limits, error) shape.
+        out["_credits"] = credits
     return out, None

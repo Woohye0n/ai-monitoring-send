@@ -279,13 +279,23 @@ def _dedupe_accounts(accounts):
     entries whose rate limits may differ, so a stale directory could overwrite
     a fresh reading.
     """
-    best = {}
+    best, credits = {}, {}
     for a in accounts:
         key = (a.get("provider"), a.get("email"), a.get("account_id"))
         prev = best.get(key)
         if prev is None or _account_rank(a) > _account_rank(prev):
             best[key] = a
-    return list(best.values())
+        # The credit balance is observed separately (a directory can see a newer
+        # balance than the one that wins on rate limits), so keep the freshest.
+        c = a.get("credits")
+        if c and (key not in credits or (c.get("observed_at") or 0) > (credits[key].get("observed_at") or 0)):
+            credits[key] = c
+    out = []
+    for key, a in best.items():
+        if key in credits and a.get("credits") is not credits[key]:
+            a = dict(a, credits=credits[key])
+        out.append(a)
+    return out
 
 
 def _dedupe_sessions(sessions):
