@@ -154,6 +154,50 @@ finally:
     shutil.rmtree(home, ignore_errors=True)
 
 
+print("\n[4] fork 가 복사해 온 조상 이력을 다시 보내지 않는가")
+home = tempfile.mkdtemp(prefix="codex-fork-")
+try:
+    sess = os.path.join(home, "sessions", "2026", "10", "26")
+    os.makedirs(sess)
+    NEW, PARENT = "01a17802-fd7d-78a2-985a-7fe27fae3395", "01a0216d-3826-7103-b7d3-39e62f235c49"
+
+    def _meta(sid, forked_from=None):
+        p = {"id": sid, "cwd": "/home/u/proj", "timestamp": "2026-08-20T23:06:41.000Z",
+             "originator": "Codex Desktop", "cli_version": "0.144.5"}
+        if forked_from:
+            p["forked_from_id"] = forked_from
+        return json.dumps({"type": "session_meta", "timestamp": "2026-10-26T11:40:29.118Z",
+                           "payload": p})
+
+    # Codex Desktop 의 실제 모양(1.87GB 파일에서 확인): 새 스레드 meta → 조상 meta 들 →
+    # 조상 턴들(복사 시각) → 새 스레드 meta 가 다시 한 번 → 새 스레드의 진짜 턴.
+    lines = [_meta(NEW, forked_from=PARENT), _meta(PARENT),
+             json.dumps({"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}})]
+    lines += [_turn("2026-10-26T11:40:29.120Z", 100 + k, 5, 900) for k in range(30)]
+    lines += [_meta(PARENT)]
+    lines += [_turn("2026-10-26T11:40:29.121Z", 200 + k, 5, 900) for k in range(30)]
+    path = os.path.join(sess, f"rollout-2026-10-26T11-40-24-{NEW}.jsonl")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    # 부모 이력 다음에 새 스레드가 진짜로 쓴 턴이 이어 붙는다(모델도 바뀐다).
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(_meta(NEW, forked_from=PARENT) + "\n")
+        f.write(json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra"}}) + "\n")
+        f.write(_turn("2026-10-26T11:42:00.000Z", 7, 3, 50, model="gpt-6-astra") + "\n")
+    got = CodexCollector(home, host="t", file_state={}).collect().get("usage") or []
+    check("조상 턴 60개는 보내지 않고 이 스레드의 진짜 턴 1개만", len(got), 1)
+    check("남은 턴은 이 스레드 소속", got[0]["session_id"] if got else None, NEW)
+
+    # 커서 호환: 예전 송신기는 복사분까지 세어 emitted_seq=60 을 남겼다.
+    # 바뀐 송신기도 같은 번호로 세야 그 뒤의 진짜 턴을 놓치지 않는다.
+    c = CodexCollector(home, host="t", file_state={})
+    _, rows, _, last_seq = c._parse_rollout(path, "lab@x", since_seq=60)
+    check("예전 커서(60) 뒤의 진짜 턴은 그대로 나온다",
+          ([u["session_id"] for u in rows], last_seq), ([NEW], 61))
+finally:
+    shutil.rmtree(home, ignore_errors=True)
+
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
