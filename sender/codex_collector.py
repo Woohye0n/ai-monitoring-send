@@ -341,6 +341,13 @@ class CodexCollector:
         ``None`` makes every turn assumed.
         """
         meta = {}
+        # 이 파일 자신의 스레드. Codex Desktop 에서 세션을 fork 하면 새 rollout 의
+        # 첫 session_meta(id=새 스레드, forked_from_id=부모) 뒤에 부모·조상의
+        # session_meta 와 그 턴들이 **복사 시각**을 달고 통째로 다시 적힌다(실측:
+        # 1.87GB, 조상 2개의 6.7만 턴이 5초 안에). 그 턴들은 조상 자신의 rollout 에
+        # 원래 시각으로 이미 있으므로 여기서 다시 보내면 '지금 쓴 것' 으로 세진다 —
+        # 중앙에서 원래 턴이 보관 기간을 넘겨 지워졌으면 내용 키로도 걸러지지 않는다.
+        own_id = None
         model = None
         # 턴마다가 아니라 "설정이 바뀔 때" 적히는 값이라 상태로 들고 간다. 파일은
         # 매 주기 처음부터 다시 읽으므로(emitted_seq 는 내보내기만 건너뛴다)
@@ -366,6 +373,8 @@ class CodexCollector:
                     p = d.get("payload") or {}
                     if t == "session_meta":
                         meta = p
+                        if own_id is None:
+                            own_id = p.get("id")
                         # Which surface opened this thread.  Codex records both
                         # ``originator`` ("codex_vscode" / "codex_cli_rs" /
                         # "Codex Desktop") and ``source`` ("vscode").
@@ -416,6 +425,11 @@ class CodexCollector:
                         seq += 1
                         if seq <= since_seq:
                             continue      # 이미 보낸 턴 — 속도제한 정보는 위에서 이미 반영했다
+                        if own_id and sid != own_id:
+                            # fork 가 복사해 온 조상 턴. seq 는 위에서 그대로 셌다 —
+                            # 이미 저장된 커서(emitted_seq)가 이 줄들까지 센 값이라
+                            # 번호를 바꾸면 이후의 진짜 턴을 건너뛰게 된다.
+                            continue
                         provable = bool(attributable_after_ms and ts
                                         and ts >= attributable_after_ms)
                         inp_uncached = max(0, inp - cached - written)
