@@ -35,6 +35,7 @@ class FakeTransport:
         self.cfg = {}
 
     def deliver(self, local, node, final):
+        # 업로더는 transport 의 deliver 대신 모듈 함수 deliver() 를 부른다.
         self.calls += 1
         if self.fail_on and self.calls == self.fail_on:
             raise RuntimeError("network down")
@@ -68,6 +69,7 @@ try:
     state = os.path.join(base, "state.json")
     cfg = {"drop_root": drop, "node_id": "hangang-robot"}
     up.remote_last_ms = lambda tport, node: 0
+    up.deliver = lambda tport, local, node, final: tport.deliver(local, node, final)
     clock = lambda: 1793300000000          # 시계가 멈춰 있어도 이름은 증가해야 한다
 
     print("[1] 계정이 섞여도 원래 순서대로, 엄격히 증가하는 이름으로 올린다")
@@ -130,6 +132,30 @@ try:
     check("무엇을 올릴지 알려준다", len(seen), 1)
 finally:
     shutil.rmtree(base, ignore_errors=True)
+
+print("\n[6] 원격에서는 mv 전에 644 로 연다 (umask 007 원본 → 640 이 되던 버그)")
+spec2 = importlib.util.spec_from_file_location(
+    "drop_uploader2", os.path.join(ROOT, "scripts", "drop-uploader.py"))
+up2 = importlib.util.module_from_spec(spec2)
+spec2.loader.exec_module(up2)
+from sender import sshcmd   # noqa: E402
+cmds = []
+orig = (sshcmd.ssh_exec, sshcmd.scp_put)
+sshcmd.ssh_exec = lambda cfg, c: cmds.append(("ssh", c)) or ""
+sshcmd.scp_put = lambda cfg, l, r: cmds.append(("scp", r)) or ""
+try:
+    class T:
+        cfg = {}
+        def _remotedir(self, node):
+            return "/r/inbox/" + node
+    up2.deliver(T(), "/drop/u/batch-1.json.gz", "n", "batch-9-u.json.gz")
+finally:
+    sshcmd.ssh_exec, sshcmd.scp_put = orig
+check("mkdir → scp(up-) → chmod 644 && mv", cmds, [
+    ("ssh", "mkdir -p '/r/inbox/n'"),
+    ("scp", "/r/inbox/n/up-batch-9-u.json.gz"),
+    ("ssh", "chmod 644 '/r/inbox/n/up-batch-9-u.json.gz' && mv -f "
+            "'/r/inbox/n/up-batch-9-u.json.gz' '/r/inbox/n/batch-9-u.json.gz'")])
 
 print()
 if fails:

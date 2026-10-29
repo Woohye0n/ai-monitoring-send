@@ -120,6 +120,24 @@ def remote_last_ms(tport, node):
     return best
 
 
+def deliver(tport, local, node, final):
+    """up- 이름으로 올리고, 읽기 권한을 연 뒤 원격 mv 로 공개한다.
+
+    SshTransport.deliver 를 그대로 쓰지 않는 이유: scp 는 원본 모드를 원격
+    umask 로 깎아 만들 뿐 넓히지는 않는다. 다른 계정 sender 는 umask 007 로
+    돌아 원본이 660 이고, 원격에는 640(truenas_admin 소유)으로 생겨서 NFS 로
+    읽는 중앙 relay 가 열지 못했다. 그래서 mv 전에 644 로 맞춘다.
+    """
+    from sender import sshcmd
+    rd = tport._remotedir(node)
+    tmp = rd.rstrip("/") + "/up-" + final
+    dst = rd.rstrip("/") + "/" + final
+    q = sshcmd.shquote
+    sshcmd.ssh_exec(tport.cfg, f"mkdir -p {q(rd)}")
+    sshcmd.scp_put(tport.cfg, local, tmp)
+    sshcmd.ssh_exec(tport.cfg, f"chmod 644 {q(tmp)} && mv -f {q(tmp)} {q(dst)}")
+
+
 def run(cfg, state_path, tport, dry_run=False, log=print, clock=now_ms):
     node = cfg["node_id"]
     st = load_state(state_path)
@@ -143,7 +161,7 @@ def run(cfg, state_path, tport, dry_run=False, log=print, clock=now_ms):
             st["last_ms"] = ms
             continue
         try:
-            tport.deliver(path, node, final)
+            deliver(tport, path, node, final)
         except Exception as exc:  # noqa: BLE001 — 순서를 지키려고 이 회차는 멈춘다
             log(f"upload failed at {path}: {exc}")
             save_state(state_path, st)
