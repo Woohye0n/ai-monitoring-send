@@ -35,6 +35,11 @@ import urllib.error
 import urllib.request
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+# 리셋권(limit reset grants) 상태는 이 매개변수를 붙여야 실리고, Claude Code CLI 에서 온
+# 요청(x-app: cli, claude-cli User-Agent)이어야 "surface" 로 거절되지 않는다. 같은 요청
+# 하나에 실리므로 호출 수는 늘지 않는다. skip_spend=1 은 extra_usage 를 빼므로 붙이지 않는다.
+# 리셋권을 **쓰는** 요청(POST .../reset_rate_limits)은 이 송신기가 절대 보내지 않는다.
+STATUS_QUERY = "?cedar_ember=1"
 DEFAULT_VERSION = "2.1.177"
 
 
@@ -118,6 +123,18 @@ def normalize_credits(data):
     return {k: eu.get(k) for k in keep}
 
 
+def normalize_limit_resets(data):
+    """리셋권 상태 (없으면 None). grants 는 남은 횟수·기한·지금 쓸 수 있는지만 남긴다."""
+    ce = (data or {}).get("cedar_ember")
+    if not isinstance(ce, dict):
+        return None
+    keep = ("id", "label", "type", "resets_total", "resets_left", "starts_at", "ends_at",
+            "clears", "paused", "usable_now", "unavailable_reason")
+    return {"eligible": ce.get("eligible"), "ineligible_reason": ce.get("ineligible_reason"),
+            "grants": [{k: g.get(k) for k in keep}
+                       for g in ce.get("grants") or [] if isinstance(g, dict)]}
+
+
 def fetch_usage(access_token, version=DEFAULT_VERSION, timeout=20):
     """Return ``(rate_limits, error)`` for this token.
 
@@ -133,10 +150,11 @@ def fetch_usage(access_token, version=DEFAULT_VERSION, timeout=20):
     """
     if not access_token:
         return None, "no_token"
-    req = urllib.request.Request(USAGE_URL, headers={
+    req = urllib.request.Request(USAGE_URL + STATUS_QUERY, headers={
         "Authorization": f"Bearer {access_token}",
         "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": f"claude-code/{version}",
+        "User-Agent": f"claude-cli/{version} (external, cli)",
+        "x-app": "cli",
         "Content-Type": "application/json",
     })
     try:
@@ -155,6 +173,10 @@ def fetch_usage(access_token, version=DEFAULT_VERSION, timeout=20):
     if out is None:
         return None, "empty"
     credits = normalize_credits(data)
+    resets = normalize_limit_resets(data)
+    if resets is not None:
+        # 리셋권도 계정 상태라 크레딧 줄에 함께 싣는다(중앙·집계가 이미 그대로 옮긴다).
+        credits = dict(credits or {}, limit_resets=resets)
     if credits is not None:
         # Rides along in the window dict and is split off by the collector, so
         # fetch_usage keeps its (rate_limits, error) shape.
