@@ -96,6 +96,56 @@ check("카드 하나", len(out), 1)
 check("한도는 한도가 있는 쪽, 잔액은 더 최근 쪽",
       (out[0]["rate_limits"], out[0]["credits"]["balance"]), ({"x": 1}, 2.0))
 
+print("\n[5] Claude 리셋권 (cedar_ember)")
+grant = {"id": "launch-2610-fable", "label": "One Fable reset", "resets_total": 1, "resets_left": 1,
+         "starts_at": "2026-11-09T18:00:00+00:00", "ends_at": "2027-03-09T07:59:00+00:00",
+         "clears": ["seven_day_overage_included"], "paused": False, "usable_now": True,
+         "percent_used": {"seven_day": 89}, "type": "full", "unavailable_reason": None}
+body2 = dict(body, cedar_ember={"eligible": True, "ineligible_reason": None, "grants": [grant],
+                                "event_props": {"tier": "claude_max_20x"}})
+lr = claude_usage.normalize_limit_resets(body2)
+check("남은 횟수·기한·사용 가능", (lr["eligible"], lr["grants"][0]["resets_left"],
+                              lr["grants"][0]["ends_at"], lr["grants"][0]["usable_now"]),
+      (True, 1, "2027-03-09T07:59:00+00:00", True))
+check("사용률·계정 속성은 싣지 않는다", ("percent_used" in lr["grants"][0], "event_props" in lr), (False, False))
+check("cedar_ember 가 없으면 None", claude_usage.normalize_limit_resets(body), None)
+
+
+class _Resp:
+    def __init__(self, data):
+        self.data = json.dumps(data).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, *a):
+        return self.data
+
+
+seen = {}
+
+
+def _fake_urlopen(req, timeout=None):
+    seen["url"], seen["headers"] = req.full_url, dict(req.header_items())
+    return _Resp(body2)
+
+
+real = claude_usage.urllib.request.urlopen
+claude_usage.urllib.request.urlopen = _fake_urlopen
+try:
+    rl, err = claude_usage.fetch_usage("tok", version="2.1.319")
+finally:
+    claude_usage.urllib.request.urlopen = real
+check("리셋권 상태를 같은 요청으로 받는다", seen["url"].endswith("/api/oauth/usage?cedar_ember=1"), True)
+check("CLI 요청으로 보낸다", (seen["headers"].get("X-app"), seen["headers"].get("User-agent")),
+      ("cli", "claude-cli/2.1.319 (external, cli)"))
+check("크레딧 줄에 리셋권이 함께 실린다",
+      (rl["_credits"]["is_enabled"], rl["_credits"]["limit_resets"]["grants"][0]["id"], err),
+      (False, "launch-2610-fable", None))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
