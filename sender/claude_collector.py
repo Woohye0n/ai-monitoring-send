@@ -139,9 +139,9 @@ class ClaudeCollector:
         try:
             files = [os.path.join(root, f) for f in os.listdir(root) if f.endswith(".json")]
             with open(max(files, key=os.path.getmtime), "r", encoding="utf-8") as f:
-                return json.load(f).get("version") or claude_usage.DEFAULT_VERSION
+                return claude_usage.newest_version(json.load(f).get("version"))
         except (OSError, ValueError):
-            return claude_usage.DEFAULT_VERSION
+            return claude_usage.newest_version()
 
     @staticmethod
     def _account_identity(account):
