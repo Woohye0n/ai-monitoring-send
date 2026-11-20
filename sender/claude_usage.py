@@ -40,7 +40,28 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # 하나에 실리므로 호출 수는 늘지 않는다. skip_spend=1 은 extra_usage 를 빼므로 붙이지 않는다.
 # 리셋권을 **쓰는** 요청(POST .../reset_rate_limits)은 이 송신기가 절대 보내지 않는다.
 STATUS_QUERY = "?cedar_ember=1"
-DEFAULT_VERSION = "2.1.177"
+DEFAULT_VERSION = "2.1.319"
+# 설치된 Claude Code 버전들이 있는 곳 (네이티브 설치 기준).
+INSTALLED_VERSIONS_DIR = "~/.local/share/claude/versions"
+
+
+def _version_key(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return ()
+
+
+def newest_version(*candidates):
+    """가장 새 Claude Code 버전. 리셋권 조회는 버전이 낮으면 "cli_version" 으로 거절된다 —
+    한동안 안 쓴 디렉토리의 세션 기록에는 옛 버전이 남아 있어서, 그 값만 보내면 안 된다."""
+    found = [c for c in candidates if _version_key(c)]
+    try:
+        found += [n for n in os.listdir(os.path.expanduser(INSTALLED_VERSIONS_DIR)) if _version_key(n)]
+    except OSError:
+        pass
+    found.append(DEFAULT_VERSION)
+    return max(found, key=_version_key)
 
 
 def read_access_token(config_dir):

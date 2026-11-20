@@ -146,6 +146,24 @@ check("크레딧 줄에 리셋권이 함께 실린다",
       (rl["_credits"]["is_enabled"], rl["_credits"]["limit_resets"]["grants"][0]["id"], err),
       (False, "launch-2610-fable", None))
 
+print("\n[6] 사용량 요청에 싣는 Claude Code 버전")
+real_dir = claude_usage.INSTALLED_VERSIONS_DIR
+vdir = tempfile.mkdtemp()
+for v in ("2.1.300", "2.1.327", "not-a-version"):
+    os.makedirs(os.path.join(vdir, v))
+claude_usage.INSTALLED_VERSIONS_DIR = vdir
+try:
+    check("세션 기록의 옛 버전보다 설치된 새 버전", claude_usage.newest_version("2.1.234"), "2.1.327")
+    check("세션 기록이 더 새로우면 그것", claude_usage.newest_version("2.1.400"), "2.1.400")
+finally:
+    claude_usage.INSTALLED_VERSIONS_DIR = real_dir
+claude_usage.INSTALLED_VERSIONS_DIR = os.path.join(vdir, "없음")
+try:
+    check("설치 폴더가 없으면 기본값 이상", claude_usage.newest_version("2.1.177"), claude_usage.DEFAULT_VERSION)
+finally:
+    claude_usage.INSTALLED_VERSIONS_DIR = real_dir
+shutil.rmtree(vdir, ignore_errors=True)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
