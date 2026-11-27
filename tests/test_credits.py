@@ -164,6 +164,54 @@ finally:
     claude_usage.INSTALLED_VERSIONS_DIR = real_dir
 shutil.rmtree(vdir, ignore_errors=True)
 
+print("\n[7] Codex 리셋권")
+from sender import codex_collector as cc   # noqa: E402
+import base64 as _b64   # noqa: E402
+import time as _time    # noqa: E402
+
+body3 = {"credits": [
+    {"id": "R1", "status": "available", "is_supported_by_plan": True, "title": "Full reset",
+     "granted_at": "2026-10-31T19:52:27Z", "expires_at": "2026-11-30T19:52:27Z", "redeemed_at": None},
+    {"id": "R2", "status": "redeemed", "is_supported_by_plan": True, "title": "Full reset",
+     "granted_at": "2026-10-01T00:00:00Z", "expires_at": "2026-10-31T00:00:00Z",
+     "redeemed_at": "2026-10-20T00:00:00Z"}]}
+n3 = cc.norm_reset_credits(body3)
+check("남은 것·쓴 것", [(g["id"], g["resets_left"], g["usable_now"]) for g in n3["grants"]],
+      [("R1", 1, True), ("R2", 0, False)])
+check("Claude 리셋권과 같은 모양(주간 전체)", (n3["eligible"], n3["grants"][0]["clears"]), (True, ["seven_day"]))
+
+
+def _jwt(exp):
+    enc = lambda o: _b64.urlsafe_b64encode(json.dumps(o).encode()).decode().rstrip("=")
+    return enc({"alg": "none"}) + "." + enc({"exp": exp}) + ".x"
+
+
+cdir = tempfile.mkdtemp()
+col = CodexCollector(codex_dir=cdir, host="h")
+calls = []
+real_fetch = cc.fetch_reset_credits
+cc.fetch_reset_credits = lambda tok, acc, timeout=20: (calls.append((tok, acc)) or (n3, None))
+try:
+    with open(os.path.join(cdir, "auth.json"), "w") as f:
+        json.dump({"tokens": {"access_token": _jwt(int(_time.time()) - 10), "account_id": "A"}}, f)
+    cc._RESET_CACHE.clear()
+    check("만료된 토큰이면 조회하지 않는다 (갱신도 안 한다)",
+          (col._reset_credits({"account_id": "A"}, ("A", "e"), 1000), calls), (None, []))
+    with open(os.path.join(cdir, "auth.json"), "w") as f:
+        json.dump({"tokens": {"access_token": _jwt(int(_time.time()) + 3600), "account_id": "A"}}, f)
+    got = col._reset_credits({"account_id": "A"}, ("A", "e"), 2000)
+    col._reset_credits({"account_id": "A"}, ("A", "e"), 2000 + 60 * 1000)
+    check("유효한 토큰이면 조회하고, 15분 안에는 다시 부르지 않는다", (got[0]["grants"][0]["id"], len(calls)), ("R1", 1))
+finally:
+    cc.fetch_reset_credits = real_fetch
+    shutil.rmtree(cdir, ignore_errors=True)
+x1 = {"provider": "codex", "email": "e", "account_id": "1", "credits": {"balance": 3.0, "observed_at": 50}}
+x2 = {"provider": "codex", "email": "e", "account_id": "1",
+      "credits": {"source": "codex_api", "limit_resets": n3, "limit_resets_observed_at": 40}}
+m = _dedupe_accounts([x1, x2])[0]["credits"]
+check("잔액은 더 최근 디렉토리, 리셋권은 조회한 디렉토리에서", (m["balance"], m["limit_resets"] is n3, m["limit_resets_observed_at"]), (3.0, True, 40))
+check("리셋권을 쓰는 주소는 부르지 않는다", "consume" in cc.RESET_CREDITS_URL, False)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

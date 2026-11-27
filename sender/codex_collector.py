@@ -108,6 +108,56 @@ def _norm_codex_rate_limits(rl, event_ts_ms=None):
     return out or None
 
 
+# Codex 리셋권(rate limit reset credits). ChatGPT 로그인 Codex CLI 가 쓰는 조회 주소다.
+# 리셋권을 **쓰는** 주소(.../consume)는 이 송신기가 절대 부르지 않는다. 토큰도 갱신하지
+# 않는다 — 갱신하면 refresh token 이 바뀌어 그 디렉토리의 Codex CLI 로그인이 풀릴 수 있다.
+# 만료된 토큰이면 조회를 건너뛰고, 그 계정을 쓰는 다른 서버나 다음 사용 때를 기다린다.
+RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+RESET_POLL_SECONDS = 900
+_RESET_CACHE = {}   # (account_id, email) -> (attempted_at, normalized or None); 디렉토리끼리 공유
+
+
+def norm_reset_credits(body, now=None):
+    """리셋권 응답을 Claude 리셋권(limit_resets)과 같은 모양으로 바꾼다."""
+    items = (body or {}).get("credits")
+    if not isinstance(items, list):
+        return None
+    grants = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        available = c.get("status") == "available"
+        grants.append({
+            "id": c.get("id"), "label": c.get("title") or c.get("description"),
+            "type": "full", "resets_total": 1, "resets_left": 1 if available else 0,
+            "starts_at": c.get("granted_at"), "ends_at": c.get("expires_at"),
+            "clears": ["seven_day"], "paused": False,
+            "usable_now": bool(available and c.get("is_supported_by_plan", True)),
+            "status": c.get("status"), "redeemed_at": c.get("redeemed_at"),
+        })
+    return {"eligible": True, "ineligible_reason": None, "grants": grants}
+
+
+def fetch_reset_credits(access_token, account_id, timeout=20):
+    """(normalized, error). 읽기 전용 GET 한 번."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(RESET_CREDITS_URL, headers={
+        "Authorization": f"Bearer {access_token}",
+        "chatgpt-account-id": account_id or "",
+        "originator": "codex_cli_rs",
+        "User-Agent": "codex_cli_rs",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return norm_reset_credits(json.load(resp)), None
+    except urllib.error.HTTPError as e:
+        return None, f"http_{e.code}"
+    except (urllib.error.URLError, ValueError, OSError):
+        return None, "network"
+
+
 def iso_to_ms(ts):
     if not ts:
         return None
@@ -288,6 +338,32 @@ class CodexCollector:
             "display_name": org_name,
             "org_name": org_name,
         }
+
+    def _access_token(self):
+        """만료되지 않은 access token (없으면 None). 갱신하지 않는다."""
+        try:
+            with open(os.path.join(self.codex_dir, "auth.json"), "r", encoding="utf-8") as f:
+                tokens = (json.load(f).get("tokens") or {})
+        except (OSError, ValueError):
+            return None
+        token = tokens.get("access_token")
+        exp = (_decode_jwt_claims(token or "") or {}).get("exp") if token else None
+        if not token or (isinstance(exp, (int, float)) and exp * 1000 <= time.time() * 1000 + 60000):
+            return None
+        return token
+
+    def _reset_credits(self, account, account_key, now_ms):
+        """(리셋권, 관측 ms) 또는 None. 계정마다 RESET_POLL_SECONDS 에 한 번만 조회한다."""
+        cached = _RESET_CACHE.get(account_key)
+        if cached and now_ms - cached[0] < RESET_POLL_SECONDS * 1000:
+            return cached[1]
+        token = self._access_token()
+        if not token:
+            return cached[1] if cached else None
+        result, _err = fetch_reset_credits(token, account.get("account_id"))
+        value = (result, now_ms) if result is not None else (cached[1] if cached else None)
+        _RESET_CACHE[account_key] = (now_ms, value)
+        return value
 
     # -- rollout files --
     def _iter_rollouts(self):
@@ -566,6 +642,13 @@ class CodexCollector:
                 # The timestamp comes from the rollout event, not from every
                 # collector pass that happens to reuse the cache.
                 account["rate_limits_updated_at"] = newest or now_ms
+        if account:
+            resets = self._reset_credits(account, account_key, now_ms)
+            if resets is not None:
+                resets, at = resets
+                # 잔액(rollout)과 관측 시각이 다르므로 리셋권 관측 시각을 따로 싣는다.
+                account["credits"] = dict(account.get("credits") or {"source": "codex_api"},
+                                          limit_resets=resets, limit_resets_observed_at=at)
         self._last_account_identity = account_key
         self._last_poll_ms = now_ms
         return {
