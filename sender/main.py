@@ -279,7 +279,7 @@ def _dedupe_accounts(accounts):
     entries whose rate limits may differ, so a stale directory could overwrite
     a fresh reading.
     """
-    best, credits = {}, {}
+    best, credits, resets = {}, {}, {}
     for a in accounts:
         key = (a.get("provider"), a.get("email"), a.get("account_id"))
         prev = best.get(key)
@@ -290,10 +290,18 @@ def _dedupe_accounts(accounts):
         c = a.get("credits")
         if c and (key not in credits or (c.get("observed_at") or 0) > (credits[key].get("observed_at") or 0)):
             credits[key] = c
+        # 리셋권은 토큰이 살아 있는 디렉토리 하나만 조회하므로 잔액과 따로 고른다.
+        if c and c.get("limit_resets") is not None:
+            at = c.get("limit_resets_observed_at") or c.get("observed_at") or 0
+            if key not in resets or at > resets[key][0]:
+                resets[key] = (at, c["limit_resets"])
     out = []
     for key, a in best.items():
-        if key in credits and a.get("credits") is not credits[key]:
-            a = dict(a, credits=credits[key])
+        c = credits.get(key)
+        if key in resets and (c is None or c.get("limit_resets") is not resets[key][1]):
+            c = dict(c or {}, limit_resets=resets[key][1], limit_resets_observed_at=resets[key][0])
+        if c is not None and a.get("credits") is not c:
+            a = dict(a, credits=c)
         out.append(a)
     return out
 
